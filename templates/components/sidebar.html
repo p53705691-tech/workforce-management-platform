@@ -1,0 +1,59 @@
+{% import "components/macros.html" as nav %}
+{#
+  Sidebar navigation for the authenticated application shell.
+
+  Rendered once via {% include %} from base.html — the single source of
+  truth for nav markup (frontend.md: no duplicated nav markup).
+
+  Every {% if %} guard below mirrors the server-side @role_required checks
+  on the corresponding route exactly (see app/routes/*.py). This is purely
+  a UI convenience — the routes remain the actual authorization control —
+  but a signed-in user should never see a link to a page their role can't
+  reach.
+
+  Each group's links live in their own <ul aria-labelledby="..."> tied to
+  that group's heading <p id="...">, so a screen reader announces group
+  membership and item count instead of one flat run of links.
+#}
+<nav id="primary-sidebar" class="shell-sidebar-nav" aria-label="Primary">
+  <div class="brand">Workforce Management Platform</div>
+
+  {% if current_user.role in ("admin", "manager") %}
+    {{ nav.nav_group("People", id="nav-group-people") }}
+    <ul class="nav-list" aria-labelledby="nav-group-people">
+      {{ nav.nav_link("employees.list_employees", "Employees", extra_endpoints=(
+        "employees.get_employee", "employees.create_employee", "employees.update_employee",
+        "employees.terminate_employee", "employees.view_pay_rate", "employees.set_pay_rate")) }}
+      {{ nav.nav_link("departments.list_departments", "Departments", extra_endpoints=(
+        "departments.create_department", "departments.update_department", "departments.deactivate_department")) }}
+    </ul>
+  {% endif %}
+
+  {{ nav.nav_group("Operations", id="nav-group-operations") }}
+  <ul class="nav-list" aria-labelledby="nav-group-operations">
+    {{ nav.nav_link("schedule.list_shifts", "Schedule") }}
+    {{ nav.nav_link("attendance.list_entries", "Attendance") }}
+    {{ nav.nav_link("leave.list_requests", "Leave") }}
+  </ul>
+
+  {{ nav.nav_group("Insight", id="nav-group-insight") }}
+  <ul class="nav-list" aria-labelledby="nav-group-insight">
+    {{ nav.nav_link("dashboard.index", "Dashboard") }}
+  </ul>
+
+  {% if current_user.role in ("admin", "manager") %}
+    {{ nav.nav_group("Reports", sub=true, id="nav-group-reports") }}
+    <ul class="nav-list nav-sublist" aria-labelledby="nav-group-reports">
+      {{ nav.nav_link("dashboard.overtime_report", "Overtime Report") }}
+      {{ nav.nav_link("dashboard.hours_trend_report", "Hours Trend") }}
+      {{ nav.nav_link("labor_cost.department_totals", "Labor Cost", extra_endpoints=("labor_cost.employee_detail",)) }}
+    </ul>
+  {% endif %}
+
+  {% if current_user.role == "admin" %}
+    {{ nav.nav_group("Admin", id="nav-group-admin") }}
+    <ul class="nav-list" aria-labelledby="nav-group-admin">
+      {{ nav.nav_link("audit.list_entries", "Audit Log") }}
+    </ul>
+  {% endif %}
+</nav>

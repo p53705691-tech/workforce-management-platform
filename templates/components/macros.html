@@ -1,0 +1,24 @@
+{# Shared navigation markup — single source of truth for sidebar nav items,
+   so no other template hand-rolls a .nav-link/.nav-group pair (frontend.md:
+   avoid duplicated CSS/markup). #}
+
+{% macro nav_group(label, sub=false, id=none) %}
+  <p class="nav-group{{ ' nav-group--sub' if sub else '' }}"{% if id %} id="{{ id }}"{% endif %}>{{ label }}</p>
+{% endmacro %}
+
+{% macro nav_link(endpoint, label, extra_endpoints=()) %}
+  {#
+    extra_endpoints: endpoints that should also light up this link's active
+    state, for pages that hang off this nav item but aren't its own list
+    endpoint — e.g. an employee detail page, or a create/update endpoint
+    that re-renders the list template on a validation error.
+  #}
+  {% set is_active = request.endpoint == endpoint or request.endpoint in extra_endpoints %}
+  <li>
+    <a href="{{ url_for(endpoint) }}"
+       class="nav-link{{ ' active' if is_active else '' }}"
+       {% if is_active %}aria-current="page"{% endif %}>
+      {{ label }}
+    </a>
+  </li>
+{% endmacro %}

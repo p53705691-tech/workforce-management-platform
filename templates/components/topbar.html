@@ -1,0 +1,30 @@
+{#
+  Topbar for the authenticated application shell: mobile drawer toggle
+  (hidden at desktop widths, see layout.css) plus the user/account menu.
+#}
+<header class="shell-topbar">
+  <button type="button"
+          class="drawer-toggle icon-btn"
+          id="drawer-toggle"
+          aria-expanded="false"
+          aria-controls="primary-sidebar"
+          aria-label="Open navigation">
+    <span class="drawer-toggle-bars" aria-hidden="true"></span>
+  </button>
+
+  <div class="shell-topbar-spacer"></div>
+
+  <details class="user-menu">
+    <summary class="user-menu-summary">
+      <span class="user-menu-name">{{ current_user.email }}</span>
+      <span class="badge badge-neutral">{{ current_user.role }}</span>
+    </summary>
+    <div class="user-menu-panel">
+      <p class="user-menu-email text-muted">{{ current_user.email }}</p>
+      <form method="post" action="{{ url_for('auth.logout') }}" class="nav-logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secondary">Log out</button>
+      </form>
+    </div>
+  </details>
+</header>

@@ -1,0 +1,129 @@
+/*
+  Design tokens — Shiftline design system, Phase 1.
+
+  Self-hosted variable fonts (Figtree, Hanken Grotesk) rather than a
+  Google Fonts <link>: the app's Content-Security-Policy is
+  `default-src 'self'` (a deliberate security-hardening decision from an
+  earlier review pass), and loading fonts from the app's own /static/
+  origin needs no CSP change at all, versus punching a font-src/style-src
+  hole in it for an external CDN. Same visual result, zero backend touch.
+
+  Colors are HSL channel triplets (not full hsl(...) values) so any rule
+  can pull an alpha variant via hsl(var(--x) / 40%) — this is what lets
+  "ink at 40% opacity" stand in for a whole grey palette, mirroring the
+  reference component's foreground/25, foreground/5 approach instead of
+  hand-picking a dozen grey hex values.
+
+  Three-state theming: bare :root is the light palette (the default for
+  viewers with no explicit/system preference resolved yet); the
+  prefers-color-scheme block redefines tokens for an unstamped dark OS,
+  guarded so an explicit data-theme="light" still wins; data-theme="dark"
+  redefines them again so an in-app toggle wins in both directions.
+*/
+
+@font-face {
+  font-family: "Hanken Grotesk";
+  src: url("../fonts/hanken-grotesk-variable.woff2") format("woff2-variations"),
+       url("../fonts/hanken-grotesk-variable.woff2") format("woff2");
+  font-weight: 500 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Figtree";
+  src: url("../fonts/figtree-variable.woff2") format("woff2-variations"),
+       url("../fonts/figtree-variable.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ---- neutral + accent (H S L channels) ---- */
+  --paper: 210 20% 98%;
+  --surface: 0 0% 100%;
+  --ink: 222 32% 14%;
+  --line: 220 15% 85%;
+  --accent: 227 68% 52%;
+  --accent-ink: 0 0% 100%;
+
+  /* ---- semantic — reserved for actual system states, never decoration ----
+     Lightness values here are chosen, not defaults: each was verified via
+     WCAG contrast math (see Phase 1 report) to clear 4.5:1 as badge text
+     against its own ~14% tint background. success/warning/done needed to
+     be darkened from an initial pass that measured 4.1-4.3:1 and 3.05:1
+     (warning) — a real failure caught before shipping, not a hypothetical. */
+  --success: 152 45% 32%;
+  --warning: 38 80% 31%;
+  --danger: 358 65% 46%;
+  --info: 262 42% 50%;
+  --done: 200 60% 36%;
+
+  /* ---- elevation (used sparingly — modals, dropdowns; not cards/tables) ---- */
+  --shadow-elevated: 0 4px 20px -6px hsl(222 30% 10% / 0.18), 0 1px 2px hsl(222 30% 10% / 0.08);
+
+  /* ---- type ----
+     --font-body (Figtree) is the PRIMARY UI font: body copy, labels,
+     inputs, buttons, table cells — anything read at length or interacted
+     with. --font-display (Hanken Grotesk) is the SECONDARY/display font,
+     reserved for headings, the brand wordmark, and large emphasized
+     figures (metric values, labor-cost totals) — never for run-of-text.
+     Every rule in base.css/components.css that sets a font-family follows
+     this split; do not introduce a third family. */
+  --font-display: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Figtree", ui-sans-serif, system-ui, sans-serif;
+
+  --text-xs: 0.75rem;    /* 12px */
+  --text-sm: 0.8125rem;  /* 13px */
+  --text-base: 0.9375rem; /* 15px */
+  --text-md: 1rem;       /* 16px */
+  --text-lg: 1.125rem;   /* 18px */
+  --text-xl: 1.25rem;    /* 20px */
+  --text-2xl: 1.5rem;    /* 24px */
+  --text-3xl: 2rem;      /* 32px */
+
+  /* ---- spacing (4px base unit) ---- */
+  --sp-1: 0.25rem;  --sp-2: 0.5rem;   --sp-3: 0.75rem;  --sp-4: 1rem;
+  --sp-5: 1.25rem;  --sp-6: 1.5rem;   --sp-8: 2rem;      --sp-10: 2.5rem;
+  --sp-12: 3rem;    --sp-16: 4rem;    --sp-24: 6rem;
+
+  /* ---- radius — sharp on containers (cards/tables), soft on controls ---- */
+  --radius-control: 6px;
+  --radius-flat: 2px;
+  --radius-pill: 999px;
+
+  --transition-fast: 120ms ease;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: 222 28% 8%;
+    --surface: 222 25% 11%;
+    --ink: 210 25% 93%;
+    --line: 222 18% 22%;
+    --accent: 227 85% 68%;
+    --accent-ink: 222 40% 10%;
+    --success: 152 40% 56%;
+    --warning: 38 75% 62%;
+    --danger: 358 70% 66%;
+    --info: 262 60% 72%;
+    --done: 200 65% 64%;
+    --shadow-elevated: 0 4px 24px -6px hsl(0 0% 0% / 0.5), 0 1px 2px hsl(0 0% 0% / 0.4);
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: 222 28% 8%;
+  --surface: 222 25% 11%;
+  --ink: 210 25% 93%;
+  --line: 222 18% 22%;
+  --accent: 227 85% 68%;
+  --accent-ink: 222 40% 10%;
+  --success: 152 40% 56%;
+  --warning: 38 75% 62%;
+  --danger: 358 70% 66%;
+  --info: 262 60% 72%;
+  --done: 200 65% 64%;
+  --shadow-elevated: 0 4px 24px -6px hsl(0 0% 0% / 0.5), 0 1px 2px hsl(0 0% 0% / 0.4);
+}

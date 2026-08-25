@@ -1,0 +1,312 @@
+/*
+  Reusable components — Shiftline design system, Phase 1.
+
+  Two kinds of rule live here:
+  1. Classes already used by real templates today (.flash, .badge,
+     .form-field, .filter-form, .pagination, .labor-cost-total,
+     .attendance-needs-review, .hours-bar, .brand, the primary nav) —
+     restyled in place with tokens. No template changes needed; every
+     existing page picks these up immediately.
+  2. New primitives (.btn-*, .card, .metric-grid, .state-card, .nav-link)
+     that nothing uses yet — built now, adopted when Phase 2 rebuilds the
+     shell and individual pages. Defining them early is what keeps that
+     phase from inventing one-off styles per page.
+*/
+
+/* ================= 1. Existing classes, restyled ================= */
+
+/* -- Primary nav --
+   The old flat `nav[aria-label="Primary"]` horizontal-bar rule that lived
+   here in Phase 1 has been removed: no template renders that markup
+   shape any more (Phase 2's sidebar reuses the same aria-label on a
+   vertical nav — components/sidebar.html — and its own `.shell-sidebar-nav`
+   rules in layout.css fully own that element's layout). Keeping the old
+   attribute-selector rule around out-specified the new class-based rules
+   and silently broke the sidebar's layout (flex row instead of column,
+   wrong padding/gap, a stray border) — do not reintroduce it. */
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--text-md);
+  color: hsl(var(--ink));
+  margin-right: var(--sp-2);
+}
+
+.nav-logout { margin: 0; }
+.nav-logout button {
+  background: transparent;
+  color: hsl(var(--ink) / 65%);
+  border: 1px solid hsl(var(--ink) / 18%);
+  font-weight: 500;
+}
+.nav-logout button:hover { background: hsl(var(--ink) / 5%); color: hsl(var(--ink)); }
+
+/* -- Flash messages / alerts -- */
+
+.flash-messages { list-style: none; margin: 0 0 var(--sp-5); padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.flash {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-control);
+  border: 1px solid hsl(var(--ink) / 12%);
+  background: hsl(var(--ink) / 4%);
+  font-size: var(--text-sm);
+}
+
+.flash-error   { background: hsl(var(--danger) / 10%);  border-color: hsl(var(--danger) / 30%);  color: hsl(var(--danger)); }
+.flash-success { background: hsl(var(--success) / 10%); border-color: hsl(var(--success) / 30%); color: hsl(var(--success)); }
+
+/* -- Status badges (attendance, leave, shift status) -- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  padding: 2px var(--sp-2);
+  border-radius: var(--radius-pill);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+
+.badge-neutral { background: hsl(var(--ink) / 8%);      color: hsl(var(--ink) / 68%); }
+.badge-success { background: hsl(var(--success) / 14%); color: hsl(var(--success)); }
+.badge-warning { background: hsl(var(--warning) / 16%); color: hsl(var(--warning)); }
+.badge-danger  { background: hsl(var(--danger) / 14%);  color: hsl(var(--danger)); }
+.badge-info    { background: hsl(var(--info) / 14%);    color: hsl(var(--info)); }
+.badge-done    { background: hsl(var(--done) / 14%);    color: hsl(var(--done)); }
+
+/* -- Form layout (WTForms fields already wrap in .form-field) -- */
+
+.form-field {
+  margin-bottom: var(--sp-4);
+  max-width: 24rem;
+}
+
+.field-error {
+  color: hsl(var(--danger));
+  font-size: var(--text-xs);
+  margin: var(--sp-1) 0 0;
+}
+
+/* -- Inline filter bars (date-range-form, filter-form) -- */
+
+.date-range-form,
+.filter-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  background: hsl(var(--ink) / 3%);
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-flat);
+}
+.date-range-form label,
+.filter-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: 0;
+}
+.date-range-form input, .filter-form input,
+.date-range-form select, .filter-form select {
+  max-width: 12rem;
+}
+
+/* -- Pagination -- */
+
+.pagination {
+  display: flex;
+  gap: var(--sp-4);
+  margin-top: var(--sp-5);
+  font-size: var(--text-sm);
+}
+
+/* -- Labor cost figures -- */
+
+.labor-cost-total {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--text-3xl);
+  font-variant-numeric: tabular-nums;
+  margin: var(--sp-2) 0;
+}
+
+.labor-cost-warning {
+  color: hsl(var(--warning));
+  background: hsl(var(--warning) / 12%);
+  border: 1px solid hsl(var(--warning) / 30%);
+  border-radius: var(--radius-control);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--text-sm);
+  display: inline-block;
+}
+
+/* -- Attendance: rows needing review -- */
+
+.attendance-needs-review {
+  background: hsl(var(--warning) / 7%);
+}
+.attendance-needs-review:hover { background: hsl(var(--warning) / 12%); }
+
+/* -- Hours-trend bar chart -- */
+
+.hours-bar {
+  height: var(--sp-3);
+  background: hsl(var(--accent));
+  border-radius: var(--radius-flat);
+  min-width: 2px;
+}
+
+/* ================= 2. New primitives, ready for Phase 2 ================= */
+
+/* -- Buttons: opt-in variants beyond the base element default -- */
+
+.btn {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: var(--text-sm);
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius-control);
+  border: 1px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform 60ms ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-primary { background: hsl(var(--accent)); color: hsl(var(--accent-ink)); }
+.btn-primary:hover { background: hsl(var(--accent) / 88%); }
+
+.btn-secondary { background: transparent; border-color: hsl(var(--ink) / 20%); color: hsl(var(--ink)); }
+.btn-secondary:hover { background: hsl(var(--ink) / 5%); }
+
+.btn-ghost { background: transparent; color: hsl(var(--ink) / 70%); }
+.btn-ghost:hover { background: hsl(var(--ink) / 5%); }
+
+.btn-danger { background: hsl(var(--danger)); color: white; }
+.btn-danger:hover { background: hsl(var(--danger) / 88%); }
+
+.icon-btn {
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-control);
+  border: 1px solid transparent;
+  background: transparent;
+  color: hsl(var(--ink) / 55%);
+  cursor: pointer;
+}
+.icon-btn:hover { background: hsl(var(--ink) / 6%); color: hsl(var(--ink)); }
+
+/* -- Card -- */
+
+.card {
+  background: hsl(var(--surface));
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-flat);
+  padding: var(--sp-5);
+}
+.card-title { font-family: var(--font-display); font-weight: 700; font-size: var(--text-lg); margin: 0 0 var(--sp-1); }
+.card-desc { color: hsl(var(--ink) / 65%); font-size: var(--text-sm); margin: 0; }
+
+/* -- Metric grid: the dashed-grid signature from the reference,
+      reserved for key-metric surfaces (dashboard headline numbers) —
+      not applied to every card/table/section (constraint 3). -- */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px dashed hsl(var(--line));
+  border-right: none;
+  border-bottom: none;
+}
+.metric-cell {
+  padding: var(--sp-5);
+  border-right: 1px dashed hsl(var(--line));
+  border-bottom: 1px dashed hsl(var(--line));
+}
+.metric-cell .m-label { font-size: var(--text-xs); font-weight: 600; color: hsl(var(--ink) / 65%); text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-cell .m-value { font-family: var(--font-display); font-weight: 800; font-size: var(--text-3xl); margin-top: var(--sp-1); font-variant-numeric: tabular-nums; }
+.metric-cell .m-delta { font-size: var(--text-xs); margin-top: 4px; color: hsl(var(--ink) / 65%); }
+.metric-cell .m-delta.up { color: hsl(var(--success)); }
+.metric-cell .m-delta.down { color: hsl(var(--danger)); }
+
+@media (max-width: 720px) {
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 420px) {
+  .metric-grid { grid-template-columns: 1fr; }
+}
+
+/* -- Enhanced table wrapper (avatars, row actions) — base.css's bare
+      <table> styling already covers every existing template; this is
+      the opt-in shape for Phase 2 pages that want a person cell. -- */
+
+.table-wrap { overflow-x: auto; border: 1px solid hsl(var(--line)); border-radius: var(--radius-flat); }
+table.data { min-width: 640px; }
+.cell-person { display: flex; align-items: center; gap: var(--sp-3); }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  background: hsl(var(--accent) / 16%); color: hsl(var(--accent));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: var(--text-xs);
+}
+.cell-name { font-weight: 600; }
+.cell-sub { font-size: var(--text-xs); color: hsl(var(--ink) / 65%); }
+
+/* -- Data states: every important page needs these (Section 28) -- */
+
+.state-card {
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-flat);
+  padding: var(--sp-6) var(--sp-5);
+  text-align: center;
+}
+.state-card .ic { color: hsl(var(--ink) / 30%); margin-bottom: var(--sp-3); }
+.state-card h4 { margin: 0 0 4px; }
+.state-card p { font-size: var(--text-sm); color: hsl(var(--ink) / 65%); margin: 0 0 var(--sp-4); }
+
+.skeleton-line {
+  height: 10px;
+  background: hsl(var(--ink) / 8%);
+  border-radius: 4px;
+  margin-bottom: var(--sp-2);
+}
+@keyframes shimmer { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+.skeleton-line { animation: shimmer 1.6s ease-in-out infinite; }
+
+/* -- Navigation primitives, ready for Phase 2's sidebar/topbar -- */
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-control);
+  color: hsl(var(--ink) / 72%);
+  text-decoration: none;
+  font-size: var(--text-sm);
+}
+.nav-link:hover { background: hsl(var(--ink) / 5%); text-decoration: none; }
+.nav-link.active { background: hsl(var(--accent) / 12%); color: hsl(var(--accent)); font-weight: 600; }
+.nav-link .ic { width: 16px; height: 16px; flex: none; }
+
+.nav-group {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: hsl(var(--ink) / 65%);
+  padding: var(--sp-3) var(--sp-3) 4px;
+}

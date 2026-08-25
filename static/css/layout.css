@@ -1,0 +1,308 @@
+/*
+  Application shell layout — Phase 2.
+
+  Structure (see templates/base.html):
+    .shell
+      .shell-overlay          (mobile/tablet drawer backdrop, [hidden] by default)
+      .shell-sidebar           -> components/sidebar.html
+      .shell-main
+        .shell-topbar          -> components/topbar.html
+        main#main-content
+        footer
+
+  Breakpoints are mobile-first and intentionally three distinct tiers
+  (not a single mobile/desktop split):
+    - base (< 768px, mobile):  full off-canvas drawer, overlay backdrop
+    - 768-1023px (tablet):     still an off-canvas drawer (no icon set
+                                exists yet to justify a persistent icon
+                                rail — see Phase 2 report), but sized for
+                                a larger viewport; content never reserves
+                                space for a hidden sidebar
+    - >= 1024px (desktop):     persistent, always-visible sidebar; the
+                                drawer toggle is fully hidden
+
+  All transitions reuse --transition-fast, which base.css already caps to
+  ~0 under prefers-reduced-motion — no separate override needed here.
+*/
+
+:root {
+  --shell-sidebar-w: 240px;
+  --shell-topbar-h: 56px;
+}
+
+/* ---------------- Skip link ---------------- */
+
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: var(--sp-3);
+  z-index: 100;
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-ink));
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-control);
+  font-weight: 600;
+  font-size: var(--text-sm);
+  transition: top var(--transition-fast);
+}
+.skip-link:focus {
+  top: var(--sp-3);
+}
+
+/* Brand wordmark for unauthenticated pages (login, error pages) — the
+   shell isn't rendered there at all, so templates/base.html renders this
+   standalone instead of leaving the product nameless. */
+.brand-standalone {
+  padding: var(--sp-5) var(--sp-5) 0;
+}
+
+/* ---------------- Shell scaffolding ---------------- */
+
+.shell {
+  display: block;
+  min-height: 100vh;
+}
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.shell-main main {
+  flex: 1;
+}
+
+/* Body-scroll lock while the mobile/tablet drawer is open (static/main.js
+   toggles this class on <body>). */
+body.drawer-locked {
+  overflow: hidden;
+}
+
+/* ---------------- Sidebar ---------------- */
+
+.shell-sidebar {
+  background: hsl(var(--surface));
+  border-right: 1px solid hsl(var(--line));
+  overflow-y: auto;
+}
+
+.shell-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-4) var(--sp-3);
+  height: 100%;
+}
+
+.shell-sidebar-nav .brand {
+  margin: 0 0 var(--sp-4);
+  padding: 0 var(--sp-3);
+}
+
+/* Each nav group is a <ul aria-labelledby="..."> tied to its <p id="...">
+   heading (templates/components/sidebar.html) — list semantics for
+   screen readers, list-reset for visuals. */
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-group--sub {
+  padding-top: var(--sp-1);
+}
+
+.nav-sublist {
+  padding-left: var(--sp-4);
+  border-left: 1px solid hsl(var(--line));
+  margin-left: var(--sp-4);
+}
+
+/* ---------------- Topbar ---------------- */
+
+.shell-topbar {
+  position: sticky;
+  top: 0;
+  /* Above .shell-overlay (40) so the drawer-toggle stays a clearly lit,
+     undimmed control while the drawer is open — only main-content/footer
+     behind the overlay should read as "dimmed background". Below
+     .shell-sidebar (50) so the off-canvas drawer still draws over it. */
+  z-index: 45;
+  height: var(--shell-topbar-h);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-5);
+  background: hsl(var(--surface));
+  border-bottom: 1px solid hsl(var(--line));
+}
+
+.shell-topbar-spacer {
+  flex: 1;
+}
+
+.drawer-toggle-bars,
+.drawer-toggle-bars::before,
+.drawer-toggle-bars::after {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 2px;
+}
+.drawer-toggle-bars {
+  position: relative;
+}
+.drawer-toggle-bars::before,
+.drawer-toggle-bars::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+.drawer-toggle-bars::before { top: -6px; }
+.drawer-toggle-bars::after { top: 6px; }
+
+/* ---------------- User menu (native <details>/<summary>) ---------------- */
+
+.user-menu {
+  position: relative;
+}
+
+.user-menu-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  list-style: none;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-control);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.user-menu-summary::-webkit-details-marker { display: none; }
+.user-menu-summary::marker { content: ""; }
+.user-menu-summary:hover { background: hsl(var(--ink) / 5%); }
+
+.user-menu-name {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  z-index: 45;
+  min-width: 14rem;
+  background: hsl(var(--surface));
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-flat);
+  box-shadow: var(--shadow-elevated);
+  padding: var(--sp-3);
+}
+
+.user-menu-email {
+  margin: 0 0 var(--sp-3);
+  word-break: break-all;
+}
+
+.user-menu-panel .nav-logout { margin: 0; }
+.user-menu-panel .nav-logout button { width: 100%; }
+
+/* ---------------- Overlay (tablet/mobile drawer backdrop) ---------------- */
+
+.shell-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40; /* below the topbar (45) and sidebar (50): dims and inerts
+                  #main-content/footer behind it, but the topbar — home to
+                  the drawer-toggle button that closes it — stays lit and
+                  above the scrim rather than dimmed along with the rest. */
+  background: hsl(var(--ink) / 45%);
+}
+
+/* =================================================================
+   Tier 1 — mobile, base styles (< 768px): full off-canvas drawer
+   ================================================================= */
+
+.shell-sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+  width: min(85vw, 300px);
+  transform: translateX(-100%);
+  transition: transform var(--transition-fast);
+}
+
+.shell[data-drawer-open] .shell-sidebar {
+  transform: translateX(0);
+}
+
+/* No-JS / JS-failure fallback: if static/js/main.js never runs, the drawer
+   can still be reached by tabbing into it (or clicking past `inert`,
+   which requires JS to set in the first place) — keyboard focus landing
+   anywhere inside the sidebar slides it into view without needing the
+   toggle's click handler at all. */
+.shell-sidebar:focus-within {
+  transform: translateX(0);
+}
+
+.drawer-toggle {
+  display: inline-flex;
+}
+
+/* =================================================================
+   Tier 2 — tablet (768px - 1023px): still an off-canvas drawer, but
+   sized to the shell's standard sidebar width. Content must never
+   reserve space for the hidden sidebar at this tier.
+   ================================================================= */
+
+@media (min-width: 768px) {
+  .shell-sidebar {
+    width: var(--shell-sidebar-w);
+  }
+}
+
+/* =================================================================
+   Tier 3 — desktop (>= 1024px): persistent sidebar, no drawer at all
+   ================================================================= */
+
+@media (min-width: 1024px) {
+  .shell {
+    display: flex;
+  }
+
+  .shell-sidebar {
+    position: sticky;
+    top: 0;
+    left: auto;
+    bottom: auto;
+    z-index: auto;
+    flex: none;
+    width: var(--shell-sidebar-w);
+    height: 100vh;
+    transform: none;
+    transition: none;
+  }
+
+  .shell-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .drawer-toggle {
+    display: none;
+  }
+
+  .shell-overlay {
+    display: none;
+  }
+}

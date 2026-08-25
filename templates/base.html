@@ -5,50 +5,50 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
   <title>{% block title %}Workforce Management Platform{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
 </head>
 <body>
-  <header>
-    <nav aria-label="Primary">
-      <span class="brand">Workforce Management Platform</span>
-      {% if current_user.is_authenticated %}
-        <a href="{{ url_for('dashboard.index') }}">Dashboard</a>
-        <a href="{{ url_for('schedule.list_shifts') }}">Schedule</a>
-        <a href="{{ url_for('attendance.list_entries') }}">Attendance</a>
-        <a href="{{ url_for('leave.list_requests') }}">Leave</a>
-        {% if current_user.role in ("admin", "manager") %}
-          <a href="{{ url_for('labor_cost.department_totals') }}">Labor cost</a>
-          <a href="{{ url_for('dashboard.overtime_report') }}">Overtime report</a>
-          <a href="{{ url_for('dashboard.hours_trend_report') }}">Hours trend</a>
-        {% endif %}
-        {% if current_user.role == "admin" %}
-          <a href="{{ url_for('audit.list_entries') }}">Audit log</a>
-        {% endif %}
-        <form method="post" action="{{ url_for('auth.logout') }}" class="nav-logout">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit">Log out</button>
-        </form>
-      {% endif %}
-    </nav>
-  </header>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
 
-  <main id="main-content">
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <ul class="flash-messages" role="alert">
-          {% for category, message in messages %}
-            <li class="flash flash-{{ category }}">{{ message }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
+  {% if current_user.is_authenticated %}
+    <div class="shell">
+      <div class="shell-overlay" hidden data-drawer-overlay></div>
+      <aside class="shell-sidebar">
+        {% include "components/sidebar.html" %}
+      </aside>
+      <div class="shell-main">
+        {% include "components/topbar.html" %}
+  {% else %}
+    <div class="brand brand-standalone">Workforce Management Platform</div>
+  {% endif %}
 
-    {% block content %}{% endblock %}
-  </main>
+        <main id="main-content">
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+              <ul class="flash-messages" role="alert">
+                {% for category, message in messages %}
+                  <li class="flash flash-{{ category }}">{{ message }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          {% endwith %}
 
-  <footer>
-    <p>&copy; Workforce Management Platform</p>
-  </footer>
+          {% block page_header %}{% endblock %}
+
+          {% block content %}{% endblock %}
+        </main>
+
+        <footer>
+          <p>&copy; Workforce Management Platform</p>
+        </footer>
+
+  {% if current_user.is_authenticated %}
+      </div>
+    </div>
+  {% endif %}
 
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
