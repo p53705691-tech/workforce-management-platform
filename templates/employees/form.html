@@ -1,0 +1,78 @@
+{# Field partial shared by employee create/edit forms.
+   Expects a WTForms `form` instance and a surrounding <form> that already
+   rendered `form.hidden_tag()`. `hired_on` is only present on the create
+   form (EmployeeCreateForm); the edit form (EmployeeUpdateForm) omits it,
+   so it is rendered conditionally. #}
+<div class="form-field">
+  {{ form.department_id.label }}
+  {{ form.department_id() }}
+  {% for error in form.department_id.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.employee_number.label }}
+  {{ form.employee_number() }}
+  {% for error in form.employee_number.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.first_name.label }}
+  {{ form.first_name() }}
+  {% for error in form.first_name.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.last_name.label }}
+  {{ form.last_name() }}
+  {% for error in form.last_name.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.email.label }}
+  {{ form.email(autocomplete="off") }}
+  {% for error in form.email.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.phone.label }}
+  {{ form.phone() }}
+  {% for error in form.phone.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.employment_status.label }}
+  {{ form.employment_status() }}
+  {% for error in form.employment_status.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+{% if form.hired_on is defined %}
+  <div class="form-field">
+    {{ form.hired_on.label }}
+    {{ form.hired_on() }}
+    {% for error in form.hired_on.errors %}
+      <p class="field-error">{{ error }}</p>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<div class="form-field">
+  {{ form.weekly_contract_hours.label }}
+  {{ form.weekly_contract_hours() }}
+  {% for error in form.weekly_contract_hours.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>

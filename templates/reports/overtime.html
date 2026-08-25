@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Overtime report — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Overtime report</h1>
+
+  {# Rule A4: per-employee overtime *hours* only, never a rate or a cost
+     figure — see app.services.reports.overtime_summary's docstring for
+     how this is guaranteed by construction, not just by what this
+     template happens to render. #}
+  <form method="get" class="filter-form">
+    <label>Department
+      <select name="department_id">
+        <option value="">Select a department</option>
+        {% for department in departments %}
+          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+            {{ department.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Show</button>
+  </form>
+
+  {% if department_id %}
+    {% if summary %}
+      <table>
+        <thead>
+          <tr><th>Employee</th><th>Overtime hours</th></tr>
+        </thead>
+        <tbody>
+          {% for row in summary %}
+            <tr>
+              <td>{{ row.employee.first_name }} {{ row.employee.last_name }}</td>
+              <td>
+                {% if row.configured %}
+                  {{ "%.2f"|format(row.ot_hours) }}
+                {% else %}
+                  Not available (no pay rate or overtime policy configured)
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No employees in this department.</p>
+    {% endif %}
+  {% else %}
+    <p>Select a department to see its overtime summary.</p>
+  {% endif %}
+{% endblock %}

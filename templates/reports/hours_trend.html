@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Hours trend — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Hours trend</h1>
+
+  <form method="get" class="filter-form">
+    <label>Department
+      <select name="department_id">
+        <option value="">Select a department</option>
+        {% for department in departments %}
+          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+            {{ department.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Show</button>
+  </form>
+
+  {% if department_id %}
+    {% if trend %}
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Total worked hours</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for day in trend %}
+            <tr>
+              <td>{{ day.date }}</td>
+              <td>{{ "%.2f"|format(day.total_hours) }}</td>
+              <td>
+                <div class="hours-bar" style="width: {{ day.bar_width_percent }}%;"></div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No data in this range.</p>
+    {% endif %}
+  {% else %}
+    <p>Select a department to see its hours trend.</p>
+  {% endif %}
+{% endblock %}

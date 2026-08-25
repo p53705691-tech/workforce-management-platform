@@ -1,0 +1,53 @@
+{# Field partial shared by shift create/edit forms.
+   Expects a WTForms `form` instance (with department_id/starts_at/ends_at/
+   break_minutes/notes fields) and a surrounding <form> that already
+   rendered `form.hidden_tag()`. #}
+<div class="form-field">
+  {{ form.department_id.label }}
+  {{ form.department_id() }}
+  {% for error in form.department_id.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.starts_at.label }}
+  {{ form.starts_at() }}
+  {% for error in form.starts_at.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.ends_at.label }}
+  {{ form.ends_at() }}
+  {% for error in form.ends_at.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.break_minutes.label }}
+  {{ form.break_minutes() }}
+  {% for error in form.break_minutes.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+{% if form.employee_id is defined %}
+  <div class="form-field">
+    {{ form.employee_id.label }}
+    {{ form.employee_id() }}
+    {% for error in form.employee_id.errors %}
+      <p class="field-error">{{ error }}</p>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<div class="form-field">
+  {{ form.notes.label }}
+  {{ form.notes() }}
+  {% for error in form.notes.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>

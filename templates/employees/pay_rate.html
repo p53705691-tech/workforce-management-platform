@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Pay rate — {{ employee.first_name }} {{ employee.last_name }} — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  {# Admin only (see app/routes/employees.py): pay rates are more
+     sensitive than labor cost totals (confirmed rule A4) — never
+     reachable by a manager. #}
+  <h1>Pay rate — {{ employee.first_name }} {{ employee.last_name }}</h1>
+
+  {% if history %}
+    <table>
+      <thead>
+        <tr>
+          <th>Hourly rate</th>
+          <th>Effective from</th>
+          <th>Effective to</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for pay_rate in history %}
+          <tr>
+            <td>{{ "%.4f"|format(pay_rate.hourly_rate) }}</td>
+            <td>{{ pay_rate.effective_from }}</td>
+            <td>{{ pay_rate.effective_to or "ongoing" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No pay rate has been set for this employee yet.</p>
+  {% endif %}
+
+  <h2>Set a new pay rate</h2>
+  <form method="post" action="{{ url_for('employees.set_pay_rate', employee_id=employee.id) }}" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="form-field">
+      {{ form.hourly_rate.label }}
+      {{ form.hourly_rate() }}
+      {% for error in form.hourly_rate.errors %}
+        <p class="field-error">{{ error }}</p>
+      {% endfor %}
+    </div>
+    <div class="form-field">
+      {{ form.effective_from.label }}
+      {{ form.effective_from() }}
+      {% for error in form.effective_from.errors %}
+        <p class="field-error">{{ error }}</p>
+      {% endfor %}
+    </div>
+    <div class="form-field">
+      {{ form.effective_to.label }}
+      {{ form.effective_to() }}
+      {% for error in form.effective_to.errors %}
+        <p class="field-error">{{ error }}</p>
+      {% endfor %}
+    </div>
+    <button type="submit">Save pay rate</button>
+  </form>
+{% endblock %}

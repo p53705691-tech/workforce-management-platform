@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Dashboard</h1>
+  <p>Today: <strong>{{ today }}</strong></p>
+
+  <form method="get" class="filter-form">
+    <label>Department
+      <select name="department_id" onchange="this.form.submit()">
+        <option value="">All departments</option>
+        {% for department in departments %}
+          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+            {{ department.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit">Filter</button></noscript>
+  </form>
+
+  <h2>Who is working today</h2>
+  {% if working_today %}
+    <table>
+      <thead>
+        <tr><th>Employee</th><th>Department</th><th>Starts</th><th>Ends</th></tr>
+      </thead>
+      <tbody>
+        {% for shift in working_today %}
+          <tr>
+            <td>{{ employee_names.get(shift.employee_id, "Unassigned") }}</td>
+            <td>{{ department_names.get(shift.department_id, "—") }}</td>
+            <td>{{ shift.starts_at | local_dt(tz) }}</td>
+            <td>{{ shift.ends_at | local_dt(tz) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No one is scheduled to work today.</p>
+  {% endif %}
+
+  <h2>Who is absent today</h2>
+  {% if absent_today %}
+    <table>
+      <thead>
+        <tr><th>Employee</th><th>Department</th></tr>
+      </thead>
+      <tbody>
+        {% for employee in absent_today %}
+          <tr>
+            <td>{{ employee.first_name }} {{ employee.last_name }}</td>
+            <td>{{ department_names.get(employee.department_id, "—") }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No unexplained absences today.</p>
+  {% endif %}
+
+  <h2>Who is on leave today</h2>
+  {% if on_leave_today %}
+    <table>
+      <thead>
+        <tr><th>Employee</th><th>From</th><th>To</th></tr>
+      </thead>
+      <tbody>
+        {% for leave_request in on_leave_today %}
+          <tr>
+            <td>{{ employee_names.get(leave_request.employee_id, "—") }}</td>
+            <td>{{ leave_request.starts_at | local_dt(tz) }}</td>
+            <td>{{ leave_request.ends_at | local_dt(tz) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No one is on approved leave today.</p>
+  {% endif %}
+
+  <h2>Coverage today</h2>
+  {% if coverage %}
+    <table>
+      <thead>
+        <tr><th>Department</th><th>Published shifts</th><th>Active employees</th></tr>
+      </thead>
+      <tbody>
+        {% for dept_id, summary in coverage.items() %}
+          <tr>
+            <td>{{ department_names.get(dept_id, "—") }}</td>
+            <td>{{ summary.published_shifts }}</td>
+            <td>{{ summary.active_employees }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No department to show coverage for.</p>
+  {% endif %}
+
+  {# Rule A4: department totals only, never a per-employee figure or an
+     hourly rate — same boundary as app.routes.labor_cost. #}
+  <h2>Labor cost ({{ cost_start }} to {{ cost_end }})</h2>
+  {% if cost_totals %}
+    <table>
+      <thead>
+        <tr><th>Department</th><th>Total</th><th>Configuration gaps</th></tr>
+      </thead>
+      <tbody>
+        {% for dept_id, summary in cost_totals.items() %}
+          <tr>
+            <td>{{ department_names.get(dept_id, "—") }}</td>
+            <td>{% if summary is not none %}{{ "%.2f"|format(summary.total) }}{% else %}—{% endif %}</td>
+            <td>
+              {% if summary is not none and summary.unconfigured_employee_count %}
+                {{ summary.unconfigured_employee_count }} employee{{ "s" if summary.unconfigured_employee_count != 1 else "" }}
+                missing rate/policy configuration
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No department to show labor cost for.</p>
+  {% endif %}
+{% endblock %}

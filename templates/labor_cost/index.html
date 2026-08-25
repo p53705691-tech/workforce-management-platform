@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Labor cost — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Labor cost</h1>
+
+  {# Manager or admin: department/date-range totals only. Per confirmed
+     rule A4, this page never renders a per-employee figure or an hourly
+     rate — only the aggregate below. #}
+  <form method="get" class="filter-form">
+    <label>Department
+      <select name="department_id">
+        <option value="">Select a department</option>
+        {% for department in departments %}
+          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+            {{ department.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Show total</button>
+  </form>
+
+  {% if department_id and total is not none %}
+    <p class="labor-cost-total">
+      Total labor cost from {{ start }} to {{ end }}: <strong>{{ "%.2f"|format(total) }}</strong>
+    </p>
+    {% if unconfigured_employee_count %}
+      <p class="labor-cost-warning">
+        {{ unconfigured_employee_count }} employee{{ "s" if unconfigured_employee_count != 1 else "" }}
+        missing rate/policy configuration for this range — excluded from the total above.
+      </p>
+    {% endif %}
+  {% elif department_id %}
+    <p>No total available for this selection.</p>
+  {% endif %}
+
+  {% if is_admin %}
+    <p>
+      Admins can also view an individual employee's cost breakdown from
+      that employee's page.
+    </p>
+  {% endif %}
+{% endblock %}

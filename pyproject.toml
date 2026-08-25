@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "unit: pure business logic tests with no I/O",
+    "integration: tests that exercise the database",
+    "route: tests that exercise HTTP routes",
+]

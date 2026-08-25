@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Employees — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Employees</h1>
+
+  {% if employees %}
+    <table>
+      <thead>
+        <tr>
+          <th>Number</th>
+          <th>Name</th>
+          <th>Department</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for employee in employees %}
+          <tr>
+            <td>{{ employee.employee_number }}</td>
+            <td>
+              <a href="{{ url_for('employees.get_employee', employee_id=employee.id) }}">
+                {{ employee.first_name }} {{ employee.last_name }}
+              </a>
+            </td>
+            <td>{{ department_names.get(employee.department_id, "—") }}</td>
+            <td>{{ employee.employment_status }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No employees yet.</p>
+  {% endif %}
+
+  {% if form %}
+    <h2>New employee</h2>
+    <form method="post" action="{{ url_for('employees.create_employee') }}" novalidate>
+      {{ form.hidden_tag() }}
+      {% include "employees/form.html" %}
+      <button type="submit">Create employee</button>
+    </form>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Departments — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>Departments</h1>
+
+  {% if departments %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Code</th>
+          <th>Status</th>
+          <th></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for department in departments %}
+          <tr>
+            <td>{{ department.name }}</td>
+            <td>{{ department.code }}</td>
+            <td>{{ "Active" if department.is_active else "Inactive" }}</td>
+            <td>
+              {% if edit_forms and department.id in edit_forms %}
+                {% set form = edit_forms[department.id] %}
+                <form method="post" action="{{ url_for('departments.update_department', department_id=department.id) }}" novalidate>
+                  {{ form.hidden_tag() }}
+                  {% include "departments/form.html" with context %}
+                  <button type="submit">Save</button>
+                </form>
+              {% endif %}
+            </td>
+            <td>
+              {% if form and department.is_active %}
+                <form method="post" action="{{ url_for('departments.deactivate_department', department_id=department.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit">Deactivate</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No departments yet.</p>
+  {% endif %}
+
+  {% if form %}
+    <h2>New department</h2>
+    <form method="post" action="{{ url_for('departments.create_department') }}" novalidate>
+      {{ form.hidden_tag() }}
+      {% include "departments/form.html" %}
+      <button type="submit">Create department</button>
+    </form>
+  {% endif %}
+{% endblock %}

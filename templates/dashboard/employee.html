@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <h1>My dashboard</h1>
+
+  {# Deliberately personal-only: an employee's dashboard never shows
+     organization-wide or another employee's data — only what
+     scheduling/working_hours/leave already scope to their own
+     employee_id. #}
+  <h2>My upcoming shifts</h2>
+  {% if upcoming_shifts %}
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Starts</th><th>Ends</th></tr>
+      </thead>
+      <tbody>
+        {% for shift in upcoming_shifts %}
+          <tr>
+            <td>{{ shift.business_date }}</td>
+            <td>{{ shift.starts_at | local_dt(tz) }}</td>
+            <td>{{ shift.ends_at | local_dt(tz) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No upcoming shifts.</p>
+  {% endif %}
+
+  <h2>My recent hours</h2>
+  {% if recent_hours %}
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Scheduled</th><th>Worked</th><th>Difference</th></tr>
+      </thead>
+      <tbody>
+        {% for day in recent_hours %}
+          <tr>
+            <td>{{ day.date }}</td>
+            <td>{{ "%.2f"|format(day.scheduled_hours) }}</td>
+            <td>{{ "%.2f"|format(day.worked_hours) }}</td>
+            <td>{{ "%.2f"|format(day.difference_hours) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No recent hours to show.</p>
+  {% endif %}
+
+  <h2>My leave requests</h2>
+  {% if leave_requests %}
+    <table>
+      <thead>
+        <tr><th>Type</th><th>From</th><th>To</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for leave_request in leave_requests %}
+          <tr>
+            <td>{{ leave_type_names.get(leave_request.leave_type_id, "—") }}</td>
+            <td>{{ leave_request.starts_at | local_dt(tz) }}</td>
+            <td>{{ leave_request.ends_at | local_dt(tz) }}</td>
+            <td>{{ leave_request.status }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No leave requests.</p>
+  {% endif %}
+{% endblock %}

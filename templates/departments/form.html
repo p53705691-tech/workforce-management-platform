@@ -1,0 +1,18 @@
+{# Field partial shared by department create/edit forms.
+   Expects a WTForms `form` instance (with `name`/`code` fields) and a
+   surrounding <form> that already rendered `form.hidden_tag()`. #}
+<div class="form-field">
+  {{ form.name.label }}
+  {{ form.name() }}
+  {% for error in form.name.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.code.label }}
+  {{ form.code() }}
+  {% for error in form.code.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
