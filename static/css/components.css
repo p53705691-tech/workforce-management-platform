@@ -220,6 +220,41 @@
 .card-title { font-family: var(--font-display); font-weight: 700; font-size: var(--text-lg); margin: 0 0 var(--sp-1); }
 .card-desc { color: hsl(var(--ink) / 65%); font-size: var(--text-sm); margin: 0; }
 
+/* -- Public/auth page composition (login; reusable for any future page
+      that, like login, must render outside the authenticated shell but
+      still consume the same tokens/base/component styles — see
+      templates/auth/login.html). A plain .card centered on the page,
+      not a second visual system: every element inside it is styled by
+      the same base.css bare-element rules and components.css
+      primitives every authenticated page already uses. -- */
+
+.auth-page {
+  display: flex;
+  justify-content: center;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 26rem;
+  margin-top: var(--sp-8);
+}
+
+.auth-card h1 { margin-bottom: var(--sp-1); }
+.auth-card .auth-subtitle { margin: 0 0 var(--sp-6); }
+
+/* .form-field/input both cap at 24rem by default (components.css /
+   base.css) for forms embedded in a wide page; inside a 26rem card
+   that cap is pointless, so fields fill the card's own width instead. */
+.auth-card .form-field,
+.auth-card input {
+  max-width: none;
+}
+
+.auth-card .auth-submit {
+  width: 100%;
+  justify-content: center;
+}
+
 /* -- Metric grid: the dashed-grid signature from the reference,
       reserved for key-metric surfaces (dashboard headline numbers) —
       not applied to every card/table/section (constraint 3). -- */

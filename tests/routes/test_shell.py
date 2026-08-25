@@ -29,6 +29,34 @@ def test_login_page_renders_no_shell_chrome(client):
     assert b'class="shell"' not in response.data
 
 
+def test_login_page_loads_the_design_system_stylesheets(client):
+    """Regression test: a bare 200 for /login proves nothing about which
+    stylesheets it actually links — a prior manual check was fooled by a
+    stale server process on another port serving the old markup/main.css.
+    Pin the real signal down here: the served HTML itself must reference
+    every Phase 1 stylesheet, never the retired main.css, and must use
+    the shared .card/.form-field primitives rather than bare unstyled
+    markup, so the public/authenticated split can't regress into a
+    styled/unstyled split.
+    """
+    response = client.get("/login")
+    body = response.data
+
+    for stylesheet in (
+        b'href="/static/css/tokens.css"',
+        b'href="/static/css/base.css"',
+        b'href="/static/css/components.css"',
+        b'href="/static/css/layout.css"',
+    ):
+        assert stylesheet in body
+
+    assert b"main.css" not in body
+    assert b'class="auth-page"' in body
+    assert b'class="card auth-card"' in body
+    assert b'class="form-field"' in body
+    assert b'class="btn btn-primary auth-submit"' in body
+
+
 def test_admin_sees_every_nav_group(client, db_session):
     org = make_organization(db_session)
     admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
