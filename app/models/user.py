@@ -8,6 +8,7 @@ database layer by a CHECK constraint, not just in application code.
 
 from datetime import datetime, timezone
 
+from flask import session
 from flask_login import UserMixin
 from sqlalchemy import (
     BigInteger,
@@ -96,6 +97,19 @@ def load_user(user_id: str) -> "User | None":
     table in this project, so this check on every request is the
     enforcement point. A stale cookie for a deactivated/locked account is
     otherwise honored right up until it expires on its own.
+
+    The same mechanism closes an equivalent gap for a password change: at
+    login (``app.routes.auth.login``), the account's *current*
+    ``password_changed_at`` is stamped into the session. If the row's
+    value no longer matches — because the password was changed (self-
+    service or an admin reset) from some other, still-live session —
+    this session is stale and must be rejected here too, exactly like a
+    deactivated or locked-out account, rather than continuing to work
+    until its cookie happens to expire on its own. A session created
+    before this check existed has no stamp at all, which compares unequal
+    to any real value and is rejected the same way; the next login stamps
+    it, so this is a one-time, one-way transition, not a permanent
+    lockout.
     """
     user = db.session.get(User, int(user_id))
     if user is None:
@@ -103,5 +117,7 @@ def load_user(user_id: str) -> "User | None":
     if not user.is_active:
         return None
     if user.locked_until is not None and user.locked_until > datetime.now(timezone.utc):
+        return None
+    if session.get("pwd_changed_at") != user.password_changed_at.isoformat():
         return None
     return user

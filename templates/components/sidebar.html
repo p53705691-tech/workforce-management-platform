@@ -13,47 +13,69 @@
 
   Each group's links live in their own <ul aria-labelledby="..."> tied to
   that group's heading <p id="...">, so a screen reader announces group
-  membership and item count instead of one flat run of links.
+  membership and item count instead of one flat run of links — the
+  heading itself is visually hidden (.sr-only, set by nav_group) rather
+  than removed, since the accessibility benefit is real even though
+  sighted users now see per-link icons instead of a text label per
+  group.
 #}
 <nav id="primary-sidebar" class="shell-sidebar-nav" aria-label="Primary">
-  <div class="brand">Workforce Management Platform</div>
+  {% if current_user.role == "employee" %}
+    {# Deliberately small, flat, and its own vocabulary — "Home" /
+       "My Schedule" / "Time & Attendance" rather than the Admin/Manager
+       "Dashboard" / "Operations" groups — per MVP-1_version2.md §8: "the
+       employee should not need to understand internal company
+       administration," so this list never grows the Admin/Manager
+       groups (People, Reports, Admin) at all. #}
+    <ul class="nav-list">
+      {{ nav.nav_link("dashboard.index", "Home", icon="home") }}
+      {{ nav.nav_link("schedule.list_shifts", "My Schedule", icon="calendar") }}
+      {{ nav.nav_link("attendance.list_entries", "Time & Attendance", icon="clock") }}
+      {{ nav.nav_link("dashboard.my_hours", "My Hours", icon="activity") }}
+      {{ nav.nav_link("leave.list_requests", "Leave", icon="calendar-off") }}
+      {{ nav.nav_link("employees.my_profile", "My Profile", icon="users") }}
+    </ul>
+  {% else %}
 
   {% if current_user.role in ("admin", "manager") %}
     {{ nav.nav_group("People", id="nav-group-people") }}
     <ul class="nav-list" aria-labelledby="nav-group-people">
-      {{ nav.nav_link("employees.list_employees", "Employees", extra_endpoints=(
+      {{ nav.nav_link("employees.list_employees", "Employees", icon="users", extra_endpoints=(
         "employees.get_employee", "employees.create_employee", "employees.update_employee",
         "employees.terminate_employee", "employees.view_pay_rate", "employees.set_pay_rate")) }}
-      {{ nav.nav_link("departments.list_departments", "Departments", extra_endpoints=(
+      {{ nav.nav_link("departments.list_departments", "Departments", icon="building", extra_endpoints=(
         "departments.create_department", "departments.update_department", "departments.deactivate_department")) }}
     </ul>
   {% endif %}
 
   {{ nav.nav_group("Operations", id="nav-group-operations") }}
   <ul class="nav-list" aria-labelledby="nav-group-operations">
-    {{ nav.nav_link("schedule.list_shifts", "Schedule") }}
-    {{ nav.nav_link("attendance.list_entries", "Attendance") }}
-    {{ nav.nav_link("leave.list_requests", "Leave") }}
+    {{ nav.nav_link("schedule.list_shifts", "Schedule", icon="calendar") }}
+    {{ nav.nav_link("attendance.list_entries", "Attendance", icon="clock") }}
+    {{ nav.nav_link("leave.list_requests", "Leave", icon="calendar-off") }}
   </ul>
 
   {{ nav.nav_group("Insight", id="nav-group-insight") }}
   <ul class="nav-list" aria-labelledby="nav-group-insight">
-    {{ nav.nav_link("dashboard.index", "Dashboard") }}
+    {{ nav.nav_link("dashboard.index", "Dashboard", icon="home") }}
   </ul>
 
   {% if current_user.role in ("admin", "manager") %}
     {{ nav.nav_group("Reports", sub=true, id="nav-group-reports") }}
     <ul class="nav-list nav-sublist" aria-labelledby="nav-group-reports">
-      {{ nav.nav_link("dashboard.overtime_report", "Overtime Report") }}
-      {{ nav.nav_link("dashboard.hours_trend_report", "Hours Trend") }}
-      {{ nav.nav_link("labor_cost.department_totals", "Labor Cost", extra_endpoints=("labor_cost.employee_detail",)) }}
+      {{ nav.nav_link("dashboard.overtime_report", "Overtime Report", icon="clock") }}
+      {{ nav.nav_link("dashboard.hours_trend_report", "Hours Trend", icon="activity") }}
+      {{ nav.nav_link("labor_cost.department_totals", "Labor Cost", icon="coins", extra_endpoints=("labor_cost.employee_detail",)) }}
     </ul>
   {% endif %}
 
   {% if current_user.role == "admin" %}
     {{ nav.nav_group("Admin", id="nav-group-admin") }}
     <ul class="nav-list" aria-labelledby="nav-group-admin">
-      {{ nav.nav_link("audit.list_entries", "Audit Log") }}
+      {{ nav.nav_link("audit.recent_activity", "Recent Activity", icon="activity") }}
+      {{ nav.nav_link("audit.list_entries", "Audit Log", icon="list") }}
     </ul>
+  {% endif %}
+
   {% endif %}
 </nav>

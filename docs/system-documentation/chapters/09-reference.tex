@@ -1,0 +1,192 @@
+\chapter{Developer Quick Reference}
+
+\section{One-Page System Map}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[flownode] (users) {Users (admin / manager / employee)};
+  \node[flownode, below=of users] (authn) {Authentication (Flask-Login, Argon2, lockout)};
+  \node[flownode, below=of authn] (roles) {Roles};
+  \node[flownode, below=of roles] (scope) {AccessScope (organization, department\_ids, employee\_id)};
+  \node[flownode, below=of scope] (routes) {Routes (10 blueprints, thin)};
+  \node[flownode, below=of routes] (services) {Services (business logic, self-checking authorization)};
+  \node[flownode, below=of services] (models) {Models (13 SQLAlchemy tables)};
+  \node[flownode, below=of models] (pg) {PostgreSQL (constraints are the last line of defense)};
+  \foreach \a/\b in {users/authn,authn/roles,roles/scope,scope/routes,routes/services,services/models,models/pg}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\textbf{Main domain relationships:} Organization
+$\to$ Department $\to$ Employee $\to$ \{Shift, AttendanceEntry,
+LeaveRequest, EmployeePayRate\}; Employee $\leftrightarrow$ User (0..1);
+User $\leftrightarrow$ Department via DepartmentManager;
+OvertimePolicy $\to$ OvertimeTier; everything logs to AuditLog.
+
+\textbf{Core derived-value chain:} Attendance (actual) $+$ Schedule
+(planned) $\to$ Working Hours $\to$ Overtime $\to$ Labor Cost. Nothing
+in this chain is stored independently of the underlying attendance
+records --- every figure is recomputed from them.
+
+\section{Important Files Cheat Sheet}
+
+\begin{longtable}{@{}p{5.4cm}p{4.5cm}p{4.5cm}@{}}
+\toprule
+\textbf{File} & \textbf{Purpose} & \textbf{When I need to edit it} \\
+\midrule
+\endhead
+\file{app/auth/scope.py} & \code{AccessScope} + \code{get\_scoped\_or\_404} &
+  Changing how authorization scope is computed --- rare, high-risk. \\
+\file{app/auth/decorators.py} & \code{login\_required} / \code{role\_required} &
+  Adding a new role or changing the coarse route-level check. \\
+\file{app/auth/service.py} & Login/lockout business logic & Changing
+  password policy, lockout thresholds, or login audit behavior. \\
+\file{app/models/base.py} & Naming convention + \code{TimestampMixin} &
+  Almost never --- affects every table's generated constraint names. \\
+\file{app/services/reports.py} & Read-only composition over every
+  other service, for dashboards/reports & Adding a new dashboard metric
+  or report --- never invent a formula here, only reuse one. \\
+\file{app/services/labor\_cost.py} & Money calculations & Any change to
+  how cost is priced or rounded --- highest-risk file in the codebase;
+  re-run \file{test\_labor\_cost\_service.py} in full. \\
+\file{app/services/overtime.py} & Pure overtime tiering math &
+  Changing overtime rules --- keep it database-free and unit-testable. \\
+\file{app/services/attendance.py} & Clock-in/out, correction,
+  stale-flagging & Any change to the attendance state machine. \\
+\file{app/services/scheduling.py} & Shift lifecycle & Any change to
+  shift creation, assignment, publish/cancel. \\
+\file{app/forms.py} & Every WTForms class & Adding a new form field or
+  a new form entirely. \\
+\file{app/errors.py} & 400/403/404/413/500 handlers & Adding a new
+  handled status code --- never leak exception detail to the response. \\
+\file{app/\_\_init\_\_.py} & \code{create\_app}, security headers,
+  blueprint registration & Adding a new blueprint, or changing global
+  headers/CSP. \\
+\file{migrations/versions/} & Schema history & Any schema change ---
+  always via a new migration, never by hand-editing the database. \\
+\file{templates/base.html} & The one shared page skeleton & Changing
+  the application shell itself (rare). \\
+\file{templates/components/*.html} & Shared macros/includes & Adding a
+  new icon, a new badge variant, or changing nav structure. \\
+\file{static/css/tokens.css} & Every design token & Changing the
+  accent color, spacing scale, or typography --- one file, applies
+  everywhere. \\
+\file{tests/factories.py} & Test data builders & Adding a new model
+  requires a matching factory here. \\
+\file{tests/conftest.py} & \code{client}/\code{db\_session} fixtures &
+  Rarely --- changes here affect every test in the suite. \\
+\bottomrule
+\end{longtable}
+
+\section{Glossary}
+
+\begin{description}[style=nextline,leftmargin=1em]
+\item[Blueprint] A Flask mechanism for grouping related routes under
+  one prefix/namespace. This project has ten (attendance, audit, auth,
+  dashboard, departments, employees, labor\_cost, leave, main,
+  schedule).
+\item[Route] A single URL pattern plus HTTP method, mapped to one view
+  function.
+\item[Service] A module in \file{app/services/} containing business
+  logic; the layer every route delegates to.
+\item[Model] A SQLAlchemy declarative class in \file{app/models/}
+  representing one database table.
+\item[ORM] Object-Relational Mapper --- SQLAlchemy's mechanism for
+  expressing database queries as Python objects/method calls instead of
+  raw SQL.
+\item[AccessScope] The frozen dataclass (\code{app.auth.scope}) every
+  authorization decision in the codebase is built from: organization,
+  role, department\_ids, employee\_id.
+\item[Role] One of \code{admin}, \code{manager}, \code{employee} ---
+  stored on \code{User.role}, enforced by a database CHECK constraint.
+\item[Authentication] Confirming \emph{who} is making a request
+  (login, session cookie, Flask-Login).
+\item[Authorization] Confirming \emph{what} an authenticated user is
+  allowed to see or do (roles, AccessScope, scoped queries).
+\item[Attendance] Actual, recorded work (clock-in/clock-out) --- distinct
+  from a Shift.
+\item[Shift] Planned work --- distinct from Attendance. Statuses:
+  draft, published, cancelled.
+\item[Overtime] Extra pay owed once daily/weekly worked-hour thresholds
+  are crossed, computed by configurable tiered multipliers.
+\item[Labor Cost] The Decimal monetary cost of worked hours, combining
+  worked time, overtime tiering, and an employee's effective-dated
+  hourly rate.
+\item[Audit Log] The append-only record of privileged actions
+  (\code{audit\_logs} table).
+\item[Migration] A versioned, ordered script (Alembic, via
+  Flask-Migrate) that applies one schema change.
+\item[Transaction] A group of database operations committed or rolled
+  back together --- e.g.\ a primary write and its audit-log entry
+  always share one commit in this codebase.
+\item[Constraint] A database-enforced rule (\code{CHECK},
+  \code{UNIQUE}, \code{FOREIGN KEY}, or \code{EXCLUDE}) that makes an
+  invalid state physically unrepresentable, independent of application
+  code.
+\item[Index] A database structure that speeds up a specific query
+  pattern --- added in this project only where a real, identified
+  access pattern needed one.
+\end{description}
+
+\section{Final System Summary}
+
+\textbf{What the system is.} A single-tenant-per-organization,
+server-rendered Flask application for managing an hourly workforce:
+employees, departments, schedules, attendance, leave, overtime, labor
+cost, reports, and an audit trail.
+
+\textbf{How it is structured.} A modular monolith with a strict
+three-layer separation --- thin Flask routes, self-authorizing service
+functions, and SQLAlchemy models backed by a PostgreSQL schema whose
+own constraints are a genuine second line of defense, not decoration.
+
+\textbf{How data flows.} Browser $\to$ route $\to$ \code{AccessScope}
+$\to$ service (re-checks authorization, applies business rules) $\to$
+SQLAlchemy $\to$ PostgreSQL, and back through a Jinja template to HTML
+--- the same path for every page in the application, documented in
+full in Chapter~2.
+
+\textbf{How users interact with it.} Through sixteen substantive pages
+(Chapter~5), all reachable from one consistent sidebar/topbar shell,
+each scoped to what the signed-in role is allowed to see.
+
+\textbf{How authentication works.} Email/password with Argon2 hashing,
+generic failure messages, timing-attack mitigation, and a 5-attempt
+lockout --- detailed in Chapter~2.
+
+\textbf{How authorization works.} \code{AccessScope}, checked at up to
+three independent layers (route decorator, service function, database
+query/constraint), with a 404-not-403 IDOR defense throughout ---
+detailed in Chapter~2 and threat-modeled in Chapter~6.
+
+\textbf{How the database is structured.} Thirteen tables under a strict
+organization-scoped tenancy model, with five hand-written
+\code{EXCLUDE ... USING gist} constraints as the schema's signature
+integrity mechanism against every kind of double-booking the domain
+has (shifts, attendance, leave, pay rates, overtime policies) ---
+detailed in Chapter~3.
+
+\textbf{What the most important business rules are.} The twelve
+cataloged in Chapter~7, \S7.4 --- most centrally, that Schedule
+(planned) and Attendance (actual) are never conflated, that no worked
+hour is ever priced under two overtime multipliers, and that a manager
+never sees an individual's pay rate or exact cost.
+
+\textbf{What is currently implemented.} Everything in the "Implemented"
+rows of \S1.2's product scope table --- which is to say, the complete
+MVP~1 as defined by the project's own governing document.
+
+\textbf{What remains to be built.} Documented explicitly, not left
+implicit: leave balances, paid-leave costing, richer break tracking,
+and (for a real production deployment) a reverse proxy in front of
+Gunicorn --- see Chapter~8, \S8.6--8.7.
+
+\textbf{What a new developer needs to understand first.} In order: the
+Employee/User distinction (\S4.2) and the Schedule/Attendance
+distinction (\S1.1, \S4.3--4.4), since almost every other domain concept
+is built on top of those two separations; then \code{AccessScope} and
+the defense-in-depth authorization model (Chapter~2), since every
+service function assumes the reader already understands it; then
+\file{app/services/labor\_cost.py} and \file{overtime.py} together, the
+two most intricate modules in the codebase, both extensively documented
+in their own docstrings and in Chapter~4, \S4.5--4.6, of this book.

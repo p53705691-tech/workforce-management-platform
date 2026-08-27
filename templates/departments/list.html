@@ -1,59 +1,129 @@
 {% extends "base.html" %}
 
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
 {% block title %}Departments — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Departments</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Departments</h1>
+      <p class="text-muted">{{ departments|length }} department{{ "s" if departments|length != 1 else "" }}</p>
+    </div>
+  </div>
+{% endblock %}
 
-  {% if departments %}
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Code</th>
-          <th>Status</th>
-          <th></th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for department in departments %}
-          <tr>
-            <td>{{ department.name }}</td>
-            <td>{{ department.code }}</td>
-            <td>{{ "Active" if department.is_active else "Inactive" }}</td>
-            <td>
-              {% if edit_forms and department.id in edit_forms %}
-                {% set form = edit_forms[department.id] %}
-                <form method="post" action="{{ url_for('departments.update_department', department_id=department.id) }}" novalidate>
-                  {{ form.hidden_tag() }}
-                  {% include "departments/form.html" with context %}
-                  <button type="submit">Save</button>
-                </form>
-              {% endif %}
-            </td>
-            <td>
-              {% if form and department.is_active %}
-                <form method="post" action="{{ url_for('departments.deactivate_department', department_id=department.id) }}">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit">Deactivate</button>
-                </form>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No departments yet.</p>
+{% block content %}
+  {% if form %}
+    {# `open` when the create form re-renders with validation errors — see
+       employees/list.html's identical comment for why this matters. #}
+    <details class="create-disclosure"{% if form.errors %} open{% endif %}>
+      <summary class="btn btn-primary">Add department</summary>
+      <div class="card">
+        <h2 class="card-title">{{ icons.icon("building") }} New department</h2>
+        <form method="post" action="{{ url_for('departments.create_department') }}" novalidate>
+          {{ form.hidden_tag() }}
+          {% include "departments/form.html" %}
+          <button type="submit" class="btn btn-primary">Create department</button>
+        </form>
+      </div>
+    </details>
   {% endif %}
 
-  {% if form %}
-    <h2>New department</h2>
-    <form method="post" action="{{ url_for('departments.create_department') }}" novalidate>
-      {{ form.hidden_tag() }}
-      {% include "departments/form.html" %}
-      <button type="submit">Create department</button>
-    </form>
+  {% if departments %}
+    <div class="table-wrap table-cards-mobile">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Department</th>
+            <th>Code</th>
+            <th>Employees</th>
+            <th>Status</th>
+            <th></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for department in departments %}
+            <tr>
+              <td class="cell-name" data-label="Department">{{ department.name }}</td>
+              <td data-label="Code">{{ department.code }}</td>
+              <td data-label="Employees">
+                {% set count = employee_counts.get(department.id, 0) %}
+                <a href="{{ url_for('employees.list_employees', department_id=department.id) }}">
+                  {{ count }} active employee{{ "s" if count != 1 else "" }}
+                </a>
+              </td>
+              <td data-label="Status">
+                {{ badges.status_badge(
+                  department.is_active,
+                  {true: "success", false: "neutral"},
+                  {true: "Active", false: "Inactive"}
+                ) }}
+              </td>
+              <td data-label="Edit">
+                {% if edit_forms and department.id in edit_forms %}
+                  {# {% with %} scopes `form` strictly to this block — unlike
+                     the {% set %} this replaced, it cannot leak into the
+                     Deactivate cell below or the next loop iteration
+                     (that was a real, if not currently exploitable, bug:
+                     the Deactivate gate used to silently key off whichever
+                     `form` a previous {% set %} had last assigned). #}
+                  {% with form = edit_forms[department.id] %}
+                    <details{% if form.errors %} open{% endif %}>
+                      <summary class="btn btn-secondary">Edit</summary>
+                      <form method="post" action="{{ url_for('departments.update_department', department_id=department.id) }}" novalidate>
+                        {# Plain, unprefixed csrf_token — same pattern as the
+                           Deactivate form below. form.hidden_tag() would
+                           render "edit-{{ department.id }}-csrf_token"
+                           under this row's prefix, which the app's global
+                           CSRF check never looks for (see
+                           app.routes.departments._edit_forms_for). #}
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% include "departments/form.html" %}
+                        <button type="submit">Save</button>
+                      </form>
+                    </details>
+                  {% endwith %}
+                {% endif %}
+              </td>
+              <td data-label="Actions">
+                {# Admin-only, same as the create/edit forms above — gated
+                   directly on role, independent of any `form` variable. #}
+                {% if current_user.role == "admin" %}
+                  <div class="row-actions">
+                    {% if department.is_active %}
+                      <form method="post" action="{{ url_for('departments.deactivate_department', department_id=department.id) }}"
+                            data-confirm="Deactivate {{ department.name }}? This department will no longer be assignable to employees or shifts.">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-danger">Deactivate</button>
+                      </form>
+                    {% endif %}
+                    {# Always offered, active or not — the service itself
+                       rejects the delete with a clear reason (still has
+                       employees or shifts) rather than this template
+                       trying to predict that. Separate, stronger wording
+                       from Deactivate: this is the one truly
+                       irreversible action on this page. #}
+                    <form method="post" action="{{ url_for('departments.delete_department', department_id=department.id) }}"
+                          data-confirm="Permanently delete {{ department.name }}? This cannot be undone, and will fail if any employees or shifts still reference it.">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-danger">Delete</button>
+                    </form>
+                  </div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("building") }}
+      <h4>No departments yet.</h4>
+      <p>Departments you create will appear here.</p>
+    </div>
   {% endif %}
 {% endblock %}

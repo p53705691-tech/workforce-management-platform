@@ -11,6 +11,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.errors import ValidationError
 from app.services.overtime import TierSpec, resolve_policy
 from tests.factories import make_organization, make_overtime_policy, make_overtime_tier
 
@@ -92,6 +93,62 @@ def test_resolve_policy_converts_tiers_into_tier_specs_split_by_scope(db_session
     assert resolved.weekly_tiers == [
         TierSpec(from_hours=Decimal("0.00"), to_hours=None, multiplier=Decimal("1.50")),
     ]
+
+
+def test_resolve_policy_rejects_a_gap_between_tiers(db_session):
+    """Data/business-logic finding: nothing in the DB stops a gap between
+    tiers (uniqueness is only on (policy_id, scope, from_hours)), which
+    would otherwise silently pay genuinely-overtime hours at 1x.
+    """
+    org = make_organization(db_session)
+    policy = make_overtime_policy(db_session, organization=org)
+    make_overtime_tier(
+        db_session, policy=policy, scope="daily", tier_order=0,
+        from_hours=Decimal("0.00"), to_hours=Decimal("2.00"), multiplier=Decimal("1.50"),
+    )
+    make_overtime_tier(
+        db_session, policy=policy, scope="daily", tier_order=1,
+        from_hours=Decimal("4.00"), to_hours=None, multiplier=Decimal("2.00"),
+    )
+
+    with pytest.raises(ValidationError, match="gap or overlap"):
+        resolve_policy(org.id, date(2026, 1, 1))
+
+
+def test_resolve_policy_rejects_overlapping_tiers(db_session):
+    """Same finding, the other direction: an overlap would silently pay
+    some hours at two multipliers combined.
+    """
+    org = make_organization(db_session)
+    policy = make_overtime_policy(db_session, organization=org)
+    make_overtime_tier(
+        db_session, policy=policy, scope="weekly", tier_order=0,
+        from_hours=Decimal("0.00"), to_hours=Decimal("5.00"), multiplier=Decimal("1.50"),
+    )
+    make_overtime_tier(
+        db_session, policy=policy, scope="weekly", tier_order=1,
+        from_hours=Decimal("2.00"), to_hours=None, multiplier=Decimal("2.00"),
+    )
+
+    with pytest.raises(ValidationError, match="gap or overlap"):
+        resolve_policy(org.id, date(2026, 1, 1))
+
+
+def test_resolve_policy_allows_a_scope_with_no_tiers_at_all(db_session):
+    """A policy that only tracks weekly OT (daily_threshold_hours set
+    high enough that daily OT never triggers) has zero daily tiers by
+    design — this must not be treated as a configuration error.
+    """
+    org = make_organization(db_session)
+    policy = make_overtime_policy(
+        db_session, organization=org, daily_threshold_hours=Decimal("24.00")
+    )
+    make_overtime_tier(db_session, policy=policy, scope="weekly", tier_order=0)
+
+    resolved = resolve_policy(org.id, date(2026, 1, 1))
+
+    assert resolved.daily_tiers == []
+    assert len(resolved.weekly_tiers) == 1
 
 
 def test_resolve_policy_is_scoped_to_the_given_organization(db_session):

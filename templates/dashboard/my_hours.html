@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}My Hours — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>My Hours</h1>
+      <p class="text-muted">Your scheduled and worked time. No pay rate or cost figures appear here — that's a managerial view.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("clock") }}</div>
+      <div class="m-label">Today</div>
+      <div class="m-value">
+        {{ "%.2f"|format(today_hours.worked_hours) if today_hours else "0.00" }}<span class="text-muted">&nbsp;/&nbsp;{{ "%.2f"|format(today_hours.scheduled_hours) if today_hours else "0.00" }}h</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("calendar") }}</div>
+      <div class="m-label">Last 7 Days</div>
+      <div class="m-value">
+        {{ "%.2f"|format(week_worked) }}<span class="text-muted">&nbsp;/&nbsp;{{ "%.2f"|format(week_scheduled) }}h</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("activity") }}</div>
+      <div class="m-label">Overtime (Last 7 Days)</div>
+      <div class="m-value">
+        {% if week_overtime_hours is not none %}
+          {{ "%.2f"|format(week_overtime_hours) }}h
+        {% else %}
+          <span class="text-muted">Not available</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("calendar") }}</div>
+      <div class="m-label">This Month</div>
+      <div class="m-value">
+        {{ "%.2f"|format(month_worked) }}<span class="text-muted">&nbsp;/&nbsp;{{ "%.2f"|format(month_scheduled) }}h</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">{{ icons.icon("clock") }} Daily Breakdown</h3>
+    {% if daily_history %}
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Scheduled</th><th>Worked</th><th>Difference</th></tr>
+          </thead>
+          <tbody>
+            {% for day in daily_history | reverse %}
+              <tr>
+                <td data-label="Date">{{ day.date }}</td>
+                <td data-label="Scheduled">{{ "%.2f"|format(day.scheduled_hours) }}</td>
+                <td data-label="Worked">{{ "%.2f"|format(day.worked_hours) }}</td>
+                <td data-label="Difference">{{ "%.2f"|format(day.difference_hours) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("clock") }}
+        <h4>No hours recorded</h4>
+        <p>No scheduled or worked hours were found for this period.</p>
+      </div>
+    {% endif %}
+  </div>
+{% endblock %}

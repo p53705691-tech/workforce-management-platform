@@ -49,11 +49,33 @@
   top: var(--sp-3);
 }
 
-/* Brand wordmark for unauthenticated pages (login, error pages) — the
-   shell isn't rendered there at all, so templates/base.html renders this
-   standalone instead of leaving the product nameless. */
-.brand-standalone {
-  padding: var(--sp-5) var(--sp-5) 0;
+/* ---------------- Page header (Phase 3) ----------------
+   Fills {% block page_header %} (templates/base.html) — replaces every
+   page's old bare `<h1>` at the top of {% block content %} with one
+   consistent title/subtitle/actions row, reusing .btn-* for actions and
+   .text-muted for the subtitle rather than inventing new type styles. */
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-6);
+}
+
+.page-header h1 {
+  margin-bottom: 0;
+}
+
+.page-header-text .text-muted {
+  margin-top: var(--sp-1);
+}
+
+.page-header-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
 }
 
 /* ---------------- Shell scaffolding ---------------- */
@@ -71,6 +93,25 @@
 
 .shell-main main {
   flex: 1;
+  /* base.css's bare `main` rule centers itself (margin: 0 auto) for the
+     no-sidebar case (login, error pages) — correct there, but inside
+     the authenticated shell it instead left an uneven-looking gap
+     between the sidebar and the content's capped max-width, with all
+     the empty space piling up on the left. Real dashboard apps
+     (Notion, Linear, Vercel) don't center their content block in the
+     leftover space next to a sidebar; content hugs the sidebar with
+     consistent padding and the max-width only guards against overly
+     long line lengths on very wide screens. */
+  margin: 0;
+  max-width: none;
+}
+
+.shell-main main > * {
+  /* 1400px — was 72rem (1152px), too narrow on wide desktop screens
+     (~490px of dead space at 1920px). Content still hugs the sidebar
+     (see the comment above) rather than centering; this only widens
+     the cap itself. */
+  max-width: 87.5rem;
 }
 
 /* Body-scroll lock while the mobile/tablet drawer is open (static/main.js
@@ -95,14 +136,12 @@ body.drawer-locked {
   height: 100%;
 }
 
-.shell-sidebar-nav .brand {
-  margin: 0 0 var(--sp-4);
-  padding: 0 var(--sp-3);
-}
-
 /* Each nav group is a <ul aria-labelledby="..."> tied to its <p id="...">
    heading (templates/components/sidebar.html) — list semantics for
-   screen readers, list-reset for visuals. */
+   screen readers, list-reset for visuals. The heading itself is
+   .sr-only now (no visible group text — icons per link carry that
+   meaning instead), so the gap between groups is purely visual, added
+   here rather than relying on the (invisible) heading's own spacing. */
 .nav-list {
   list-style: none;
   margin: 0;
@@ -110,6 +149,15 @@ body.drawer-locked {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.nav-group + .nav-list {
+  margin-top: var(--sp-4);
+}
+/* "Reports" is a nested sub-section of Insight, not a fresh top-level
+   group — a smaller gap keeps that relationship visually legible.
+   Same specificity as the rule above; must come after it to win. */
+.nav-group--sub + .nav-list {
+  margin-top: var(--sp-2);
 }
 
 .nav-group--sub {
@@ -202,7 +250,7 @@ body.drawer-locked {
   min-width: 14rem;
   background: hsl(var(--surface));
   border: 1px solid hsl(var(--line));
-  border-radius: var(--radius-flat);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-elevated);
   padding: var(--sp-3);
 }

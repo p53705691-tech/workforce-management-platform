@@ -1,97 +1,153 @@
 {% extends "base.html" %}
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Schedule — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Schedule</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Schedule</h1>
+      <p class="text-muted">{{ shifts|length }} shift{{ "s" if shifts|length != 1 else "" }} between {{ start.isoformat() }} and {{ end.isoformat() }}</p>
+    </div>
+  </div>
+{% endblock %}
 
-  <form method="get" class="date-range-form">
+{% block content %}
+  <form method="get" class="filter-form">
     <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
     <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    {% if can_manage %}
+      <label>Department
+        <select name="department_id">
+          <option value="">All departments</option>
+          {% for department_id, name in department_choices %}
+            <option value="{{ department_id }}" {% if selected_department_id == department_id %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    {% endif %}
     <button type="submit">Filter</button>
   </form>
 
-  {% if shifts %}
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Starts</th>
-          <th>Ends</th>
-          <th>Department</th>
-          {% if can_manage %}<th>Employee</th>{% endif %}
-          <th>Status</th>
-          {% if can_manage %}<th>Actions</th>{% endif %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for shift in shifts %}
-          <tr>
-            <td>{{ shift.business_date }}</td>
-            <td>{{ shift.starts_at | local_dt(tz) }}</td>
-            <td>{{ shift.ends_at | local_dt(tz) }}</td>
-            <td>{{ department_names.get(shift.department_id, "—") }}</td>
-            {% if can_manage %}
-              <td>{{ employee_names.get(shift.employee_id, "Unassigned") }}</td>
-            {% endif %}
-            <td>{{ shift.status }}</td>
-            {% if can_manage %}
-              <td>
-                {% if shift.id in edit_forms %}
-                  <details>
-                    <summary>Edit</summary>
-                    {% set form = edit_forms[shift.id] %}
-                    <form method="post" action="{{ url_for('schedule.update_shift', shift_id=shift.id) }}" novalidate>
-                      {{ form.hidden_tag() }}
-                      {% include "schedule/form.html" %}
-                      <button type="submit">Save</button>
-                    </form>
-                  </details>
-                {% endif %}
-
-                {% if shift.id in assign_forms %}
-                  <details>
-                    <summary>Assign</summary>
-                    {% set form = assign_forms[shift.id] %}
-                    <form method="post" action="{{ url_for('schedule.assign_shift', shift_id=shift.id) }}" novalidate>
-                      {{ form.hidden_tag() }}
-                      {{ form.employee_id.label }}
-                      {{ form.employee_id() }}
-                      <button type="submit">Assign</button>
-                    </form>
-                  </details>
-                {% endif %}
-
-                {% if shift.status == "draft" and shift.employee_id %}
-                  <form method="post" action="{{ url_for('schedule.publish_shift', shift_id=shift.id) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit">Publish</button>
-                  </form>
-                {% endif %}
-
-                {% if shift.status != "cancelled" %}
-                  <form method="post" action="{{ url_for('schedule.cancel_shift', shift_id=shift.id) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit">Cancel</button>
-                  </form>
-                {% endif %}
-              </td>
-            {% endif %}
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No shifts in this range.</p>
+  {% if create_form %}
+    <details class="create-disclosure"{% if create_form.errors %} open{% endif %}>
+      <summary class="btn btn-primary">New shift</summary>
+      <div class="card">
+        <h2 class="card-title">{{ icons.icon("calendar") }} New shift</h2>
+        {% with form = create_form %}
+          <form method="post" action="{{ url_for('schedule.create_shift') }}" novalidate>
+            {{ form.hidden_tag() }}
+            {% include "schedule/form.html" %}
+            <button type="submit">Create shift</button>
+          </form>
+        {% endwith %}
+      </div>
+    </details>
   {% endif %}
 
-  {% if create_form %}
-    <h2>New shift</h2>
-    <form method="post" action="{{ url_for('schedule.create_shift') }}" novalidate>
-      {% set form = create_form %}
-      {{ form.hidden_tag() }}
-      {% include "schedule/form.html" %}
-      <button type="submit">Create shift</button>
-    </form>
+  {% if end < start %}
+    <div class="state-card">
+      {{ icons.icon("alert-triangle") }}
+      <h4>Invalid date range</h4>
+      <p>The "To" date is before the "From" date — adjust the range above.</p>
+    </div>
+  {% elif shifts %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Starts</th>
+            <th>Ends</th>
+            <th>Hours</th>
+            <th>Department</th>
+            {% if can_manage %}<th>Employee</th>{% endif %}
+            <th>Status</th>
+            {% if can_manage %}<th>Actions</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for shift in shifts %}
+            <tr>
+              <td data-label="Date">{{ shift.business_date }}</td>
+              <td data-label="Starts">{{ shift.starts_at | local_dt(tz) }}</td>
+              <td data-label="Ends">{{ shift.ends_at | local_dt(tz) }}</td>
+              <td data-label="Hours">{{ "%.2fh"|format(shift_hours[shift.id]) }}</td>
+              <td data-label="Department">{{ department_names.get(shift.department_id, "—") }}</td>
+              {% if can_manage %}
+                <td data-label="Employee">
+                  {% if shift.employee_id %}
+                    {{ employee_names.get(shift.employee_id, "—") }}
+                  {% else %}
+                    <span class="badge badge-warning">Unassigned</span>
+                  {% endif %}
+                </td>
+              {% endif %}
+              <td data-label="Status">{{ badges.status_badge(shift.status, {"draft": "neutral", "published": "info", "cancelled": "danger"}) }}</td>
+              {% if can_manage %}
+                <td data-label="Actions">
+                <div class="row-actions">
+                  {% if shift.id in edit_forms %}
+                    {% with form = edit_forms[shift.id] %}
+                      <details{% if form.errors %} open{% endif %}>
+                        <summary class="btn btn-secondary">Edit</summary>
+                        <form method="post" action="{{ url_for('schedule.update_shift', shift_id=shift.id) }}" novalidate>
+                          {{ form.hidden_tag() }}
+                          {% include "schedule/form.html" %}
+                          <button type="submit">Save</button>
+                        </form>
+                      </details>
+                    {% endwith %}
+                  {% endif %}
+
+                  {% if shift.id in assign_forms %}
+                    {% with form = assign_forms[shift.id] %}
+                      <details{% if form.errors %} open{% endif %}>
+                        <summary class="btn btn-secondary">Assign</summary>
+                        <form method="post" action="{{ url_for('schedule.assign_shift', shift_id=shift.id) }}" novalidate>
+                          {{ form.hidden_tag() }}
+                          {{ form.employee_id.label }}
+                          {{ form.employee_id() }}
+                          <button type="submit">Assign</button>
+                        </form>
+                      </details>
+                    {% endwith %}
+                  {% endif %}
+
+                  {% if shift.status == "draft" and shift.employee_id %}
+                    <form method="post" action="{{ url_for('schedule.publish_shift', shift_id=shift.id) }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-primary">Publish</button>
+                    </form>
+                  {% endif %}
+
+                  {% if shift.status != "cancelled" %}
+                    <form method="post" action="{{ url_for('schedule.cancel_shift', shift_id=shift.id) }}"
+                          data-confirm="Cancel this shift?{% if shift.status == 'published' %} It has already been published.{% endif %}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-danger">Cancel</button>
+                    </form>
+                  {% endif %}
+                </div>
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% elif selected_department_id %}
+    <div class="state-card">
+      {{ icons.icon("calendar-off") }}
+      <h4>No results for this department</h4>
+      <p>Try a different date range, or clear the department filter.</p>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("calendar-off") }}
+      <h4>No shifts in this range</h4>
+      <p>No shifts are scheduled between {{ start.isoformat() }} and {{ end.isoformat() }}.</p>
+    </div>
   {% endif %}
 {% endblock %}

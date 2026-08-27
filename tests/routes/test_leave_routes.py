@@ -3,7 +3,7 @@
 Mirrors the authorization-focused style of test_attendance_routes.py.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -231,6 +231,92 @@ def test_employee_can_cancel_their_own_pending_request_via_route(client, db_sess
     assert leave_request.status == "cancelled"
 
 
+def test_manager_filtering_by_an_unmanaged_employee_sees_no_data(client, db_session):
+    org = make_organization(db_session)
+    managed = make_department(db_session, organization=org)
+    unmanaged = make_department(db_session, organization=org)
+    unmanaged_employee = make_employee(db_session, organization=org, department=unmanaged)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    make_leave_request(db_session, organization=org, employee=unmanaged_employee, requested_by=admin)
+    manager = _make_manager(db_session, org, managed)
+    _login(client, manager)
+
+    response = client.get(f"/leave?employee_id={unmanaged_employee.id}")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "No results for this filter" in body
+
+
+def test_admin_can_filter_leave_requests_by_employee(client, db_session):
+    org = make_organization(db_session)
+    employee_a = make_employee(db_session, organization=org)
+    employee_b = make_employee(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    make_leave_request(db_session, organization=org, employee=employee_a, requested_by=admin)
+    make_leave_request(db_session, organization=org, employee=employee_b, requested_by=admin)
+    _login(client, admin)
+
+    response = client.get(f"/leave?employee_id={employee_a.id}")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert f'value="{employee_a.id}" selected' in body
+
+
+def test_admin_leave_page_has_no_self_service_request_form(client, db_session):
+    """Submitting a leave request "as myself" (or as an arbitrary employee
+    picked from a dropdown defaulting to "Myself") is employee
+    self-service — see app.forms.LeaveRequestForm vs. AdminLeaveRequestForm
+    — and belongs on the employee's own Leave page (my_leave.html) only.
+    The admin/manager Leave page is a review/approval surface: it must
+    never render a "Request leave" submission form or a "Myself" option.
+    """
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get("/leave")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Request leave" not in body
+    assert "Request Leave" not in body
+    assert "Myself" not in body
+    assert 'action="/leave"' not in body
+
+
+def test_manager_leave_page_offers_a_single_review_action_for_pending_requests(
+    client, db_session
+):
+    """A pending request must offer one "Review" entry point, not two
+    large Approve/Reject controls competing in the same row — Approve and
+    Reject are mutually exclusive outcomes of the same decision (see the
+    Leave page UX brief). The underlying approve/reject routes and their
+    validation rules (decision_note optional vs. required) are unchanged;
+    only how the row presents them changed.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    leave_type = make_leave_type(db_session, organization=org)
+    manager = _make_manager(db_session, org, department)
+    make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type,
+        requested_by=manager,
+    )
+    _login(client, manager)
+
+    response = client.get("/leave")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert ">Review<" in body
+    assert 'action="/leave/' in body and "/approve" in body
+    assert 'action="/leave/' in body and "/reject" in body
+    assert "leave-row-pending" in body
+
+
 def test_employee_cannot_cancel_another_employees_request_via_route(client, db_session):
     org = make_organization(db_session)
     employee = make_employee(db_session, organization=org)
@@ -252,3 +338,69 @@ def test_employee_cannot_cancel_another_employees_request_via_route(client, db_s
     assert response.status_code == 404
     db_session.refresh(leave_request)
     assert leave_request.status == "pending"
+
+
+def test_employee_sees_the_dedicated_my_leave_page(client, db_session):
+    """Employee gets a personal Pending/Approved summary
+    (MVP-1_version2.md §17), not the admin/manager approval table — and
+    never a fabricated "Available" balance, since no accrual ledger
+    exists in this system.
+    """
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org)
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/leave")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Pending" in body
+    assert "Approved" in body
+    assert "Available" not in body
+
+
+def test_employee_leave_page_tags_a_currently_active_approved_request(client, db_session):
+    """"Happening now" / "Upcoming" is display-only sugar derived from an
+    approved request's own dates against today (see app.routes.leave —
+    mirrors reports.who_is_on_leave_today's same-comparison elsewhere),
+    not a new leave rule. A pending request must never get a timing tag:
+    it isn't leave yet, only a request for some.
+    """
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org)
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    now = datetime.now(timezone.utc)
+    make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type,
+        requested_by=admin, status="approved",
+        decided_by_user_id=admin.id, decided_at=now,
+        starts_at=now - timedelta(hours=2), ends_at=now + timedelta(hours=2),
+    )
+    make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type,
+        requested_by=admin,
+        starts_at=now + timedelta(days=30), ends_at=now + timedelta(days=31),
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/leave")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Happening now" in body
+    assert "Upcoming" not in body
+
+
+def test_admin_still_sees_the_management_leave_page(client, db_session):
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get("/leave")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Employee" in body

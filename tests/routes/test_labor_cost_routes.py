@@ -106,6 +106,26 @@ def test_manager_can_view_department_totals(client, db_session):
 
     assert response.status_code == 200
     assert b"160.00" in response.data
+    # Rule A4: a manager never sees the per-employee breakdown section at
+    # all, not just its numbers — the whole drill-down UI is admin-only.
+    assert b"Per-Employee Breakdown" not in response.data
+
+
+def test_admin_sees_per_employee_breakdown_links_for_the_department(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get(
+        f"/labor-cost?department_id={department.id}&start=2026-01-05&end=2026-01-05"
+    )
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Per-Employee Breakdown" in body
+    assert f"/labor-cost/employees/{employee.id}" in body
 
 
 def test_manager_cannot_reach_admin_only_employee_cost_detail(client, db_session):

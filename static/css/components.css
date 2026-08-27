@@ -4,7 +4,7 @@
   Two kinds of rule live here:
   1. Classes already used by real templates today (.flash, .badge,
      .form-field, .filter-form, .pagination, .labor-cost-total,
-     .attendance-needs-review, .hours-bar, .brand, the primary nav) —
+     .attendance-needs-review, .hours-bar, the primary nav) —
      restyled in place with tokens. No template changes needed; every
      existing page picks these up immediately.
   2. New primitives (.btn-*, .card, .metric-grid, .state-card, .nav-link)
@@ -25,13 +25,6 @@
    and silently broke the sidebar's layout (flex row instead of column,
    wrong padding/gap, a stray border) — do not reintroduce it. */
 
-.brand {
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-size: var(--text-md);
-  color: hsl(var(--ink));
-  margin-right: var(--sp-2);
-}
 
 .nav-logout { margin: 0; }
 .nav-logout button {
@@ -93,6 +86,31 @@
   margin: var(--sp-1) 0 0;
 }
 
+/* -- Form sections: a real <fieldset>/<legend> grouping for longer
+      forms (the employee create/edit form is the first user) — a
+      native reset rather than a div-based fake, so the grouping is
+      announced to assistive tech for free. -- */
+.form-section {
+  border: none;
+  padding: 0;
+  margin: 0 0 var(--sp-6);
+  min-width: 0;
+}
+.form-section + .form-section {
+  padding-top: var(--sp-5);
+  border-top: 1px solid hsl(var(--line));
+}
+.form-section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: hsl(var(--ink) / 60%);
+  padding: 0;
+  margin: 0 0 var(--sp-4);
+}
+
 /* -- Inline filter bars (date-range-form, filter-form) -- */
 
 .date-range-form,
@@ -105,7 +123,7 @@
   margin-bottom: var(--sp-5);
   background: hsl(var(--ink) / 3%);
   border: 1px solid hsl(var(--line));
-  border-radius: var(--radius-flat);
+  border-radius: var(--radius-lg);
 }
 .date-range-form label,
 .filter-form label {
@@ -120,6 +138,7 @@
 .date-range-form select, .filter-form select {
   max-width: 12rem;
 }
+.filter-form input[type="search"] { max-width: 18rem; }
 
 /* -- Pagination -- */
 
@@ -130,9 +149,13 @@
   font-size: var(--text-sm);
 }
 
-/* -- Labor cost figures -- */
+/* -- Labor cost figures --
+      .report-total: same large-display treatment, reused by the
+      Overtime and Hours Trend reports for their own headline totals —
+      generic name since it's no longer labor-cost-specific. -- */
 
-.labor-cost-total {
+.labor-cost-total,
+.report-total {
   font-family: var(--font-display);
   font-weight: 800;
   font-size: var(--text-3xl);
@@ -157,16 +180,105 @@
 }
 .attendance-needs-review:hover { background: hsl(var(--warning) / 12%); }
 
-/* -- Hours-trend bar chart -- */
+/* -- Leave: pending rows, the review disclosure, and the Dates column --
+   Same "tint the row, don't decorate every cell" treatment as
+   .attendance-needs-review above — pending is this page's one state that
+   needs a manager's attention, so it gets the same visual language
+   rather than a page-specific one. -- */
+
+.leave-row-pending { background: hsl(var(--warning) / 7%); }
+.leave-row-pending:hover { background: hsl(var(--warning) / 12%); }
+
+.leave-dates { display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.leave-dates .text-muted { font-size: var(--text-xs); }
+
+.leave-review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-control);
+  background: hsl(var(--surface));
+  min-width: 240px;
+}
+.leave-review-panel form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-2);
+}
+.leave-review-panel label { margin: 0; }
+
+.leave-timing-tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: hsl(var(--ink) / 65%);
+}
+.leave-timing-tag.current { color: hsl(var(--success)); }
+
+/* -- Hours-trend bar chart --
+   The app's CSP is `default-src 'self'` with no `style-src`, so it falls
+   back to `default-src` for style-src-attr too — inline `style="..."`
+   attributes never apply in any CSP-enforcing browser (confirmed: they
+   were silently inert here, both the static row/track layout and the
+   per-row dynamic width). A percentage bucketed to the nearest 5% via
+   .hours-bar-w-* keeps the value driven by real server-computed data
+   (day.bar_width_percent, rounded in the template) with zero inline
+   style and zero CSP exception — 21 steps (0/5/10/.../100%) is more than
+   enough precision for a relative-comparison bar chart whose exact value
+   is already shown as text in the adjacent cell. -- */
+
+.hours-bar-row { display: flex; align-items: center; gap: var(--sp-3); }
+.hours-bar-track { width: 12rem; flex: none; }
 
 .hours-bar {
   height: var(--sp-3);
   background: hsl(var(--accent));
-  border-radius: var(--radius-flat);
+  border-radius: var(--radius-lg);
   min-width: 2px;
 }
+.hours-bar-w-0   { width: 0%; }
+.hours-bar-w-5   { width: 5%; }
+.hours-bar-w-10  { width: 10%; }
+.hours-bar-w-15  { width: 15%; }
+.hours-bar-w-20  { width: 20%; }
+.hours-bar-w-25  { width: 25%; }
+.hours-bar-w-30  { width: 30%; }
+.hours-bar-w-35  { width: 35%; }
+.hours-bar-w-40  { width: 40%; }
+.hours-bar-w-45  { width: 45%; }
+.hours-bar-w-50  { width: 50%; }
+.hours-bar-w-55  { width: 55%; }
+.hours-bar-w-60  { width: 60%; }
+.hours-bar-w-65  { width: 65%; }
+.hours-bar-w-70  { width: 70%; }
+.hours-bar-w-75  { width: 75%; }
+.hours-bar-w-80  { width: 80%; }
+.hours-bar-w-85  { width: 85%; }
+.hours-bar-w-90  { width: 90%; }
+.hours-bar-w-95  { width: 95%; }
+.hours-bar-w-100 { width: 100%; }
 
 /* ================= 2. New primitives, ready for Phase 2 ================= */
+
+/* -- Row actions: a wrapper *inside* a table cell holding several
+      controls (a mix of plain <form>/<button> and <details> disclosures
+      — schedule/attendance/leave list rows all do this) with no shared
+      layout, so each control's own block-level default margin was the
+      only thing "spacing" them — i.e. nothing, they rendered flush
+      against each other. Deliberately a <div> wrapper INSIDE the <td>,
+      never applied to the <td> itself — `display:flex` directly on a
+      table cell stops it generating a table-cell box, which breaks its
+      column alignment with the rest of the table. -- */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.row-actions form { margin: 0; }
 
 /* -- Buttons: opt-in variants beyond the base element default -- */
 
@@ -198,6 +310,12 @@
 .btn-danger { background: hsl(var(--danger)); color: white; }
 .btn-danger:hover { background: hsl(var(--danger) / 88%); }
 
+/* Larger touch target for a page's one unmistakable primary action
+   (e.g. Clock In/Out on the employee dashboard) — ui-ux.md §18 and this
+   session's standing mobile-usability note both call this out
+   specifically. */
+.btn-lg { padding: 0.85rem 1.75rem; font-size: var(--text-md); font-weight: 700; }
+
 .icon-btn {
   width: 30px; height: 30px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -214,8 +332,11 @@
 .card {
   background: hsl(var(--surface));
   border: 1px solid hsl(var(--line));
-  border-radius: var(--radius-flat);
+  border-radius: var(--radius-lg);
   padding: var(--sp-5);
+  /* Subtle lift, reserved for .card only — .table-wrap/.state-card/filter
+     bars stay flat and functional. See tokens.css's --shadow-card comment. */
+  box-shadow: var(--shadow-card);
 }
 .card-title { font-family: var(--font-display); font-weight: 700; font-size: var(--text-lg); margin: 0 0 var(--sp-1); }
 .card-desc { color: hsl(var(--ink) / 65%); font-size: var(--text-sm); margin: 0; }
@@ -261,7 +382,12 @@
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* Both current metric-grid pages (Admin/Employee dashboards) have 4
+     cells — repeat(3, 1fr) left a lone 4th cell stranded on its own
+     row at 1/3 width. auto-fit + a minimum cell width keeps this
+     correct regardless of exactly how many cells a future page adds,
+     rather than hardcoding a count that drifts out of sync again. */
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
   border: 1px dashed hsl(var(--line));
   border-right: none;
   border-bottom: none;
@@ -271,6 +397,8 @@
   border-right: 1px dashed hsl(var(--line));
   border-bottom: 1px dashed hsl(var(--line));
 }
+.metric-cell .m-icon { color: hsl(var(--ink) / 42%); margin-bottom: var(--sp-2); }
+.metric-cell .m-icon .ic { width: 18px; height: 18px; }
 .metric-cell .m-label { font-size: var(--text-xs); font-weight: 600; color: hsl(var(--ink) / 65%); text-transform: uppercase; letter-spacing: 0.04em; }
 .metric-cell .m-value { font-family: var(--font-display); font-weight: 800; font-size: var(--text-3xl); margin-top: var(--sp-1); font-variant-numeric: tabular-nums; }
 .metric-cell .m-delta { font-size: var(--text-xs); margin-top: 4px; color: hsl(var(--ink) / 65%); }
@@ -284,12 +412,334 @@
   .metric-grid { grid-template-columns: 1fr; }
 }
 
+/* -- Icon set base sizing (templates/components/icons.html) — every
+      icon shares one viewBox/stroke, so one default size covers every
+      call site; a handful of contexts (nav-link, state-card) already
+      override it for their own scale. -- */
+.ic { width: 20px; height: 20px; flex: none; display: inline-block; vertical-align: middle; }
+
+/* -- Dashboard summary cards (Requiring Attention, Labor Cost) — icon +
+      text card-title, and margin below to separate from the following
+      section. Scoped to .summary-card/.dashboard-grid rather than a
+      bare .card so unrelated pages' cards (login, employee profile,
+      etc.) are untouched. -- */
+.summary-card { margin-bottom: var(--sp-6); }
+.summary-card .card-title,
+.dashboard-grid .card-title { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* A card flagged as needing attention gets a warning-toned border/wash;
+   plain .card (no modifier) covers the calm "nothing to flag" state. */
+.card--attention { border-color: hsl(var(--warning) / 35%); background: hsl(var(--warning) / 5%); }
+.card--attention .card-title { color: hsl(var(--warning)); }
+.card--attention .status-card-icon { background: hsl(var(--warning) / 16%); color: hsl(var(--warning)); }
+.card--attention .status-card-label { color: hsl(var(--warning)); }
+
+/* A "danger zone" card — destructive/irreversible actions only
+   (terminate an employee). Kept collapsed behind a disclosure by
+   default so it never competes visually with routine actions, but the
+   card itself still reads as dangerous even collapsed. */
+.card--danger { border-color: hsl(var(--danger) / 35%); background: hsl(var(--danger) / 4%); }
+.card--danger .card-title { color: hsl(var(--danger)); }
+
+/* -- Dashboard: detailed-data grid — four compact operational sections
+      side by side on desktop instead of stacked full-width (each is a
+      narrow 2-4 column table; full-width was mostly unused whitespace).
+      -- */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-5);
+  margin-bottom: var(--sp-6);
+}
+@media (min-width: 900px) {
+  .dashboard-grid { grid-template-columns: 1fr 1fr; }
+}
+.dashboard-grid .card-caption { margin: 0 0 var(--sp-3); }
+
+/* -- Dashboard filter: integrated into .page-header-actions (a toolbar
+      row), so it needs its own compact layout rather than
+      .filter-form's standalone boxed/bordered treatment. -- */
+.dashboard-filter { display: flex; align-items: flex-end; gap: var(--sp-3); }
+.dashboard-filter label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.dashboard-filter select { max-width: 14rem; }
+
+.attention-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.attention-list a { font-weight: 600; }
+
+.all-clear { display: flex; align-items: center; gap: var(--sp-2); color: hsl(var(--success)); margin: 0; }
+.all-clear .ic { width: 18px; height: 18px; }
+
+.activity-list { list-style: none; margin: 0 0 var(--sp-4); padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.activity-item { display: flex; gap: var(--sp-3); align-items: flex-start; }
+.activity-item .ic { width: 16px; height: 16px; margin-top: 2px; color: hsl(var(--ink) / 45%); }
+.activity-item-text { font-size: var(--text-sm); }
+.activity-item-meta { font-size: var(--text-xs); color: hsl(var(--ink) / 60%); margin-top: 2px; }
+
+/* -- Employee dashboard: current attendance status / check-in-out card.
+      The page's one unmistakable primary action (ui-ux.md §18) — full
+      width, first on the page. Neutral by default; a success wash+border
+      only once genuinely clocked in (.status-card--working), matching
+      the same "color only reinforces an icon+text state, never carries
+      it alone" pattern as .card--attention. -- */
+.status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+}
+.status-card-body { display: flex; align-items: center; gap: var(--sp-4); }
+.status-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--ink) / 6%);
+  color: hsl(var(--ink) / 55%);
+}
+.status-card-icon .ic { width: 24px; height: 24px; }
+.status-card--working { border-color: hsl(var(--success) / 30%); background: hsl(var(--success) / 4%); }
+.status-card--working .status-card-icon { background: hsl(var(--success) / 16%); color: hsl(var(--success)); }
+.status-card-label { font-family: var(--font-display); font-weight: 800; font-size: var(--text-lg); margin: 0; }
+.status-card-detail { color: hsl(var(--ink) / 65%); font-size: var(--text-sm); margin: var(--sp-1) 0 0; }
+
+/* Mobile: the primary action becomes a full-width, easy-to-tap target
+   rather than a small button trailing off to one side — see this
+   session's standing note that mobile usage of this app is a real,
+   expected case, not an afterthought. */
+@media (max-width: 480px) {
+  .status-card form { width: 100%; }
+  .status-card .btn-lg { width: 100%; justify-content: center; }
+}
+
+/* ================= Employee Home ==================================
+   Deliberately its own composition, not the Admin Dashboard's dense
+   operational grid restyled — same tokens/typography/components, a
+   calmer, more personal layout (MVP-1_version2.md §23: "shared design
+   system... not necessarily the same layout"). The dashed-grid metric
+   treatment (.metric-grid) stays an Admin Dashboard signature; Employee
+   Home uses plain bordered cards with more breathing room instead, and
+   a list rather than a table for the small "what's coming up" surface.
+   ------------------------------------------------------------------- */
+
+.employee-hero {
+  margin-bottom: var(--sp-6);
+  animation: employee-fade-up 320ms ease both;
+}
+.employee-hero h1 {
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: 800;
+  margin-bottom: var(--sp-1);
+}
+.employee-hero .text-muted { font-size: var(--text-base); }
+
+@keyframes employee-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Employee Home's version of the primary status card: same component,
+   more generous scale — this is the one thing the page is for, so it
+   gets more visual weight than a routine info card. */
+.status-card--hero {
+  padding: var(--sp-8) var(--sp-6);
+  animation: employee-fade-up 320ms ease both;
+}
+.status-card--hero .status-card-icon { width: 60px; height: 60px; }
+.status-card--hero .status-card-icon .ic { width: 28px; height: 28px; }
+.status-card--hero .status-card-label {
+  font-size: var(--text-2xl);
+  letter-spacing: -0.01em;
+}
+.status-card--hero .status-card-elapsed {
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  margin: var(--sp-2) 0 0;
+}
+.status-card--hero .status-card-elapsed .unit {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: hsl(var(--ink) / 55%);
+  margin-left: var(--sp-1);
+}
+
+/* Lighter stat surface: plain cards, generous padding, no dashed
+   border signature (that stays reserved for the Admin Dashboard). */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+.stat-card {
+  background: hsl(var(--surface));
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-lg);
+  padding: var(--sp-5);
+  box-shadow: var(--shadow-card);
+}
+.stat-card .m-icon { color: hsl(var(--ink) / 42%); margin-bottom: var(--sp-2); }
+.stat-card .m-icon .ic { width: 18px; height: 18px; }
+.stat-card .m-label { font-size: var(--text-xs); font-weight: 600; color: hsl(var(--ink) / 65%); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-card .m-value { font-family: var(--font-display); font-weight: 800; font-size: var(--text-2xl); margin-top: var(--sp-1); font-variant-numeric: tabular-nums; }
+.stat-card .m-value .text-muted { font-family: var(--font-body); font-weight: 600; font-size: var(--text-base); }
+
+/* Upcoming Shifts as a calm list rather than a table — a handful of
+   rows read better as cards than as a dense grid. */
+.shift-list { list-style: none; margin: 0 0 var(--sp-4); padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.shift-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-control);
+}
+.shift-item-date {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--text-base);
+  min-width: 5.5rem;
+}
+.shift-item-date .weekday { display: block; font-size: var(--text-xs); font-weight: 600; color: hsl(var(--ink) / 55%); text-transform: uppercase; letter-spacing: 0.04em; }
+.shift-item-time { color: hsl(var(--ink) / 70%); font-size: var(--text-sm); flex: 1; }
+.shift-item-hours { font-size: var(--text-sm); }
+/* My Schedule: today's shift gets the same restrained accent treatment
+   used elsewhere for "this is the one that matters right now" (compare
+   .status-card--working) — an accent border, not a loud fill. */
+.shift-item--today { border-color: hsl(var(--accent) / 45%); background: hsl(var(--accent) / 4%); }
+.shift-item--today .shift-item-date { color: hsl(var(--accent)); }
+
+/* My Leave: a calmer card list, not the admin/manager approval table. */
+.leave-item-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.leave-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid hsl(var(--line));
+  border-radius: var(--radius-control);
+  flex-wrap: wrap;
+}
+.leave-item-type { font-family: var(--font-display); font-weight: 700; }
+.leave-item-dates { font-size: var(--text-sm); margin-top: 2px; }
+.leave-item-reason { font-size: var(--text-sm); margin-top: var(--sp-1); }
+.leave-item-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
+.leave-item-side form { margin: 0; }
+
+@media (max-width: 720px) {
+  .stat-row { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 420px) {
+  .stat-row { grid-template-columns: 1fr; }
+}
+
+/* Field grid: a real, token-driven replacement for bare <dl>/<dt>/<dd>
+   — this design system had no styling for those elements at all, so
+   every page using them (My Profile, Employee Detail) was rendering
+   raw, unstyled browser defaults. Label above value, in a responsive
+   grid, matches the rest of the app's typography/spacing scale. */
+.field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--sp-5) var(--sp-6); }
+.field-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.field-label { font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: hsl(var(--ink) / 55%); }
+.field-value { font-size: var(--text-base); font-weight: 600; overflow-wrap: break-word; }
+.field-value.text-muted { font-weight: 500; }
+
+/* Profile header: avatar + name + meta — the entry point to a
+   profile-style page. Larger than the list-row .avatar (person cells
+   in a table need to stay compact; a page about one person doesn't). */
+.profile-header { display: flex; align-items: center; gap: var(--sp-5); margin-bottom: var(--sp-6); animation: employee-fade-up 320ms ease both; }
+.profile-avatar {
+  width: 64px; height: 64px; border-radius: 50%; flex: none;
+  background: hsl(var(--accent) / 16%); color: hsl(var(--accent));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: var(--text-xl); font-family: var(--font-display);
+}
+.profile-header h1 { font-family: var(--font-display); font-size: var(--text-2xl); font-weight: 800; margin-bottom: 2px; }
+.profile-header .text-muted { font-size: var(--text-sm); }
+
+/* A card explicitly marked editable — a restrained accent wash, so the
+   one section a user can actually change is visually distinct from the
+   read-only ones above it, without a "Read only" badge on every line. */
+.card--editable { border-color: hsl(var(--accent) / 30%); background: hsl(var(--accent) / 3%); }
+.card--editable .card-title { color: hsl(var(--accent)); }
+
+/* A trailing note inside a card, spaced apart from a field-grid/form
+   above it — never an inline style="" (the app's CSP has no
+   unsafe-inline exception for styles). */
+.card-note { margin-top: var(--sp-4); }
+
+@media (max-width: 480px) {
+  .profile-header { flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
+}
+/* Nested inside .page-header (Employee Detail): that ancestor already
+   supplies the section's bottom margin, so the reused .profile-header
+   here must not double it up. */
+.page-header .profile-header { margin-bottom: 0; }
+
 /* -- Enhanced table wrapper (avatars, row actions) — base.css's bare
       <table> styling already covers every existing template; this is
       the opt-in shape for Phase 2 pages that want a person cell. -- */
 
-.table-wrap { overflow-x: auto; border: 1px solid hsl(var(--line)); border-radius: var(--radius-flat); }
-table.data { min-width: 640px; }
+/* min-width lives on the wrapped table generally, not gated behind
+   `.data` — the point of `.table-wrap`'s overflow-x:auto is to scroll a
+   wide table instead of squeezing its columns unreadably, and that only
+   engages once the table actually has a width to scroll. Every table
+   inside a `.table-wrap` needs this, not just the person-cell ones. */
+.table-wrap { overflow-x: auto; border: 1px solid hsl(var(--line)); border-radius: var(--radius-lg); margin-bottom: var(--sp-6); }
+.table-wrap table { min-width: 640px; }
+
+/* -- Responsive table -> card transform, opt-in via .table-cards-mobile
+      (MVP-1_version2.md §15/§31: "on mobile, transform dense tables
+      into readable cards," not just a horizontal scroll). Every <td>
+      in a table using this modifier must also carry a matching
+      data-label attribute — the existing dense Admin/Manager tables
+      keep the plain horizontal-scroll behavior above unchanged; this
+      is additive, opted into only where the template supplies labels. -- */
+@media (max-width: 640px) {
+  .table-cards-mobile { overflow-x: visible; }
+  .table-cards-mobile table { min-width: 0; width: 100%; }
+  .table-cards-mobile thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+  .table-cards-mobile tr {
+    display: block;
+    border-bottom: 1px solid hsl(var(--line));
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .table-cards-mobile tr:last-child { border-bottom: none; }
+  .table-cards-mobile td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-1) 0;
+    text-align: right;
+    border: none;
+  }
+  .table-cards-mobile td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: hsl(var(--ink) / 60%);
+    text-align: left;
+  }
+}
 .cell-person { display: flex; align-items: center; gap: var(--sp-3); }
 .avatar {
   width: 28px; height: 28px; border-radius: 50%; flex: none;
@@ -304,9 +754,10 @@ table.data { min-width: 640px; }
 
 .state-card {
   border: 1px solid hsl(var(--line));
-  border-radius: var(--radius-flat);
+  border-radius: var(--radius-lg);
   padding: var(--sp-6) var(--sp-5);
   text-align: center;
+  margin-bottom: var(--sp-6);
 }
 .state-card .ic { color: hsl(var(--ink) / 30%); margin-bottom: var(--sp-3); }
 .state-card h4 { margin: 0 0 4px; }
@@ -324,6 +775,7 @@ table.data { min-width: 640px; }
 /* -- Navigation primitives, ready for Phase 2's sidebar/topbar -- */
 
 .nav-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -332,10 +784,25 @@ table.data { min-width: 640px; }
   color: hsl(var(--ink) / 72%);
   text-decoration: none;
   font-size: var(--text-sm);
+  font-weight: 500;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 .nav-link:hover { background: hsl(var(--ink) / 5%); text-decoration: none; }
-.nav-link.active { background: hsl(var(--accent) / 12%); color: hsl(var(--accent)); font-weight: 600; }
-.nav-link .ic { width: 16px; height: 16px; flex: none; }
+.nav-link.active { background: hsl(var(--accent) / 12%); color: hsl(var(--accent)); font-weight: 700; }
+/* A left-edge accent bar, not color alone, marks the active item —
+   modern sidebar convention (Linear/Vercel-style) and a second signal
+   beyond the background tint. */
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--accent));
+}
+.nav-link .ic { width: 17px; height: 17px; flex: none; }
 
 .nav-group {
   font-size: 0.6875rem;
@@ -345,3 +812,18 @@ table.data { min-width: 640px; }
   color: hsl(var(--ink) / 65%);
   padding: var(--sp-3) var(--sp-3) 4px;
 }
+
+/* -- Disclosure controls styled as buttons (Phase 3: "Add employee",
+      "Add department", per-row "Edit" toggles) — hides the native
+      <summary> marker exactly like layout.css's .user-menu-summary
+      already does for the topbar, generalized to any <summary class="btn
+      ..."> so new call sites don't need bespoke per-page CSS. -- */
+summary.btn { list-style: none; }
+summary.btn::-webkit-details-marker { display: none; }
+summary.btn::marker { content: ""; }
+
+/* Page-level "create" disclosures (Add employee/department, New shift) —
+   sit above the page's table/list, so give the revealed .card breathing
+   room from the summary above it and the table below it. */
+.create-disclosure { margin-bottom: var(--sp-5); }
+.create-disclosure[open] summary { margin-bottom: var(--sp-4); }

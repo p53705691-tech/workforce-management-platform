@@ -24,6 +24,7 @@ from app.forms import (
 )
 from app.services import employees as employee_service
 from app.services import leave as leave_service
+from app.services import reports as report_service
 from app.services import scheduling as scheduling_service
 from app.services.errors import ValidationError
 
@@ -54,28 +55,51 @@ def list_requests():
     scope = build_scope_for_user(current_user)
     status = request.args.get("status") or None
     can_manage = scope.role in ("admin", "manager")
+    employee_id = request.args.get("employee_id", type=int) if can_manage else None
+    tz = scheduling_service.organization_timezone(scope)
 
-    requests = leave_service.list_leave_requests(scope, status=status)
+    requests = leave_service.list_leave_requests(scope, status=status, employee_id=employee_id)
     leave_types = leave_service.list_leave_types(scope)
     leave_type_names = {lt.id: lt.name for lt in leave_types}
 
     employee_names = {}
+    employee_choices = []
     conflicts = {}
     approve_forms = {}
     reject_forms = {}
     cancel_forms = {}
+    leave_timing = {}
 
+    # Submitting a leave request is employee self-service only — an
+    # admin/manager's Leave page is a review/approval surface, not a
+    # place to file a request "as" someone (see app.forms.LeaveRequestForm
+    # vs. AdminLeaveRequestForm; the latter still backs the POST route
+    # directly, for callers that reach it without this page).
     if can_manage:
         employees = employee_service.list_employees(scope)
         employee_names = {e.id: f"{e.first_name} {e.last_name}" for e in employees}
-        request_form = AdminLeaveRequestForm()
-        request_form.leave_type_id.choices = [(lt.id, lt.name) for lt in leave_types]
-        request_form.employee_id.choices = [(0, "Myself")] + [
-            (e.id, employee_names[e.id]) for e in employees
-        ]
+        employee_choices = sorted(employee_names.items(), key=lambda pair: pair[1])
+        request_form = None
     else:
         request_form = LeaveRequestForm()
         request_form.leave_type_id.choices = [(lt.id, lt.name) for lt in leave_types]
+
+    # Self-service only: "is this approved leave happening now, or coming
+    # up" is display-only sugar for the employee's own My Leave page — no
+    # new leave rule, just a same-day/future comparison of dates the
+    # request already carries, mirroring how reports.who_is_on_leave_today
+    # compares a range against today elsewhere.
+    if not can_manage:
+        today = report_service.today_business_date(scope)
+        for leave_request in requests:
+            if leave_request.status != "approved":
+                continue
+            start_date = leave_request.starts_at.astimezone(tz).date()
+            end_date = leave_request.ends_at.astimezone(tz).date()
+            if start_date <= today <= end_date:
+                leave_timing[leave_request.id] = "current"
+            elif start_date > today:
+                leave_timing[leave_request.id] = "upcoming"
 
     for leave_request in requests:
         if leave_request.status == "pending":
@@ -95,19 +119,29 @@ def list_requests():
         if cancellable:
             cancel_forms[leave_request.id] = CancelLeaveForm()
 
+    # Employee gets a personal, status-summary composition of the exact
+    # same scoped requests (no separate query) — per MVP-1_version2.md
+    # §17, not the admin/manager approval-focused table (which an
+    # employee never gets approve/reject controls for anyway, but the
+    # dense multi-employee layout doesn't fit a self-service view).
+    template = "leave/my_leave.html" if scope.role == "employee" else "leave/list.html"
+
     return render_template(
-        "leave/list.html",
+        template,
         requests=requests,
         leave_type_names=leave_type_names,
         employee_names=employee_names,
+        employee_choices=employee_choices,
+        selected_employee_id=employee_id,
         conflicts=conflicts,
         can_manage=can_manage,
         request_form=request_form,
         approve_forms=approve_forms,
         reject_forms=reject_forms,
         cancel_forms=cancel_forms,
+        leave_timing=leave_timing,
         status=status,
-        tz=scheduling_service.organization_timezone(scope),
+        tz=tz,
     )
 
 

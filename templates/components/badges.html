@@ -1,0 +1,22 @@
+{#
+  Generic status-badge rendering, shared across every page with a real
+  DB-backed status enum (Shift.status, AttendanceEntry.status,
+  LeaveRequest.status, Employee.employment_status, Department.is_active)
+  so the badge-class-to-status mapping lives in exactly one place instead
+  of being re-implemented per template (code-quality.md: avoid
+  duplicated logic). Renders the existing .badge/.badge-* primitives
+  from components.css — no new visual system.
+
+  variant_map: dict of {raw_value: "success"|"warning"|"danger"|"info"|
+  "done"|"neutral"} — one entry per value the column's CHECK constraint
+  actually allows (see the model file for the authoritative enum; never
+  guess a value that isn't in the constraint).
+  label_map: optional dict of {raw_value: "Display Text"}; falls back to
+  the raw value, title-cased, with underscores turned into spaces (e.g.
+  "needs_review" -> "Needs Review").
+#}
+{% macro status_badge(value, variant_map, label_map={}) %}
+  {% set variant = variant_map.get(value, "neutral") %}
+  {% set label = label_map.get(value, value|replace("_", " ")|title) %}
+  <span class="badge badge-{{ variant }}">{{ label }}</span>
+{% endmacro %}

@@ -1,0 +1,353 @@
+\chapter{Frontend Architecture and Security}
+
+\section{Frontend Architecture}
+
+\subsection*{Templates}
+
+Every page is rendered server-side with Jinja2. \file{templates/base.html}
+defines the one shared page skeleton: a skip link, the authenticated
+application shell (sidebar + topbar + \code{<main>}) when
+\code{current\_user.is\_authenticated}, or a bare centered card
+otherwise (login, error pages). Every other template extends
+\code{base.html} and fills in \code{\{\% block title \%\}},
+\code{\{\% block page\_header \%\}}, and \code{\{\% block content
+\%\}}.
+
+Shared, non-page markup lives in \file{templates/components/}:
+\code{icons.html} (a small inline-SVG icon set --- no external icon
+font, since the CSP allows no CDN), \code{badges.html} (a single
+\code{status\_badge(value, variant\_map, label\_map)} macro used by
+every status column in the application, so the status-to-color mapping
+exists in exactly one place), \code{macros.html} (\code{nav\_group} /
+\code{nav\_link}), \code{sidebar.html}, and \code{topbar.html}.
+
+\subsection*{CSS Architecture}
+
+Four files, loaded in a fixed order (\code{base.html}'s \code{<head>}):
+
+\begin{enumerate}[nosep]
+  \item \file{tokens.css} --- design tokens only (see \S6.2).
+  \item \file{base.css} --- element resets, typography defaults, focus
+        states, the \code{.sr-only} utility.
+  \item \file{components.css} --- reusable component classes
+        (\code{.btn-*}, \code{.card}, \code{.badge-*}, \code{.table-wrap},
+        \code{.state-card}, \code{.nav-link}, \code{.status-card}, ...).
+  \item \file{layout.css} --- the application shell grid, sidebar drawer
+        behavior, and responsive breakpoints.
+\end{enumerate}
+
+No page defines its own one-off styles outside this system --- every
+page-specific need (Attendance's "Worked" column badge, Labor Cost's
+total line) is expressed by composing existing component classes.
+
+\subsection*{JavaScript}
+
+\file{static/js/main.js} is deliberately small and contains
+\textbf{no business logic} --- everything it does is browser
+presentation behavior, per \file{.claude/rules/frontend.md}:
+
+\begin{itemize}[nosep]
+  \item The mobile/tablet sidebar drawer: open/close, an overlay, Escape
+        to close, and --- notably --- applying the HTML \code{inert}
+        attribute to whichever side of the layout is not currently
+        interactive, so keyboard \code{Tab} navigation can never reach
+        off-canvas or dimmed-behind-overlay content. This is a genuine
+        accessibility feature, not just a visual toggle.
+  \item Two small, generic, CSP-safe behaviors driven by data
+        attributes rather than inline event handlers (which the
+        application's strict CSP silently drops in every real browser):
+        \code{[data-autosubmit]} submits a form when a \code{<select>}
+        changes (with a real submit button always present as a
+        fallback), and \code{[data-confirm="..."]} shows a native
+        \code{confirm()} dialog before a destructive form submits ---
+        purely client-side friction; the server remains authoritative
+        regardless.
+\end{itemize}
+
+\subsection*{Components}
+
+Reusable UI is expressed as Jinja macros/includes, not JavaScript
+components --- there is no client-side component framework at all.
+This matches \file{CLAUDE.md}'s explicit instruction not to introduce
+React/Vue/Angular without justification.
+
+\subsection*{Responsive System}
+
+Two shell-level breakpoints (\file{layout.css}): \code{768px} and
+\code{1024px}, controlling when the sidebar collapses into the
+off-canvas drawer described above. Individual components add their own
+narrower breakpoints where needed (\code{720px}, \code{480px},
+\code{420px} in \file{components.css}, \code{900px} for a filter-bar
+layout change) --- responsive behavior is handled per-component, not
+as one global "mobile mode."
+
+\subsection*{Accessibility}
+
+\begin{itemize}[nosep]
+  \item A skip-link (\code{<a class="skip-link" href="\#main-content">})
+        as the very first focusable element on every page.
+  \item \code{:focus-visible} styling on every interactive element
+        (\file{base.css}) --- focus outlines are never removed without
+        a replacement.
+  \item \code{@media (prefers-reduced-motion: reduce)} disables
+        non-essential transitions.
+  \item Sidebar navigation group labels ("Workforce", "Operations", ...)
+        are visually hidden (\code{.sr-only}) but still announced to
+        screen readers via the group \code{<ul>}'s
+        \code{aria-labelledby} --- a sighted user sees per-link icons
+        instead of a group heading, but the semantic structure a screen
+        reader relies on is unchanged.
+  \item The mobile drawer's focus management (described above) is a
+        genuine focus-trap-equivalent implementation using \code{inert},
+        not just a CSS \code{display: none}.
+\end{itemize}
+
+\section{Design System}
+
+Defined entirely as CSS custom properties in \file{tokens.css}.
+
+\textbf{Typography.} Two self-hosted variable fonts: Figtree (body/UI
+text, buttons, tables) and Hanken Grotesk (headings, the brand
+wordmark, large emphasized figures like metric values). Both are served
+from \file{static/fonts/} as \code{woff2} --- not a Google Fonts
+\code{<link>} --- specifically so the strict CSP needs no
+\code{font-src} exception at all.
+
+\textbf{Colors.} HSL channel triplets (e.g.\ \code{--ink: 222 32\% 14\%})
+rather than full \code{hsl(...)} values, so any rule can pull an alpha
+variant via \code{hsl(var(--x) / 40\%)} --- this is what produces the
+whole "ink at N\% opacity" hierarchy from a handful of base tokens
+instead of a long list of hand-picked greys. Semantic colors
+(\code{--success}, \code{--warning}, \code{--danger}, \code{--info},
+\code{--done}) are reserved for real system states, never decoration,
+and their exact lightness values were tuned to clear WCAG's 4.5:1
+contrast ratio as badge text (documented in the file's own comments,
+including two real failures --- 4.1--4.3:1 and 3.05:1 --- caught and
+fixed before shipping).
+
+\textbf{Theming.} Three states: an unstamped root is the light palette;
+an OS-level dark preference (\code{prefers-color-scheme: dark})
+redefines the tokens, guarded so an explicit \code{data-theme="light"}
+still wins; an explicit \code{data-theme="dark"} redefines them again so
+an in-app toggle wins in both directions.
+
+\textbf{Spacing, radius, motion.} A 4px-based spacing scale
+(\code{--sp-1} through \code{--sp-24}), two radius tokens
+(\code{--radius-control} for buttons/inputs, \code{--radius-lg} for
+containers), and a single \code{--transition-fast} (120ms) used for
+every micro-interaction.
+
+\textbf{Components documented by their own CSS comments.} Buttons
+(\code{.btn-primary}\allowbreak/\code{.btn-secondary}\allowbreak/\code{.btn-danger}),
+forms, tables (\code{.table-wrap}), cards (\code{.card},
+\code{.summary-card}), status badges (\code{.badge-*}, mapped
+per-domain by \code{badges.html}'s macro), metric cells
+(\code{.metric-grid}\allowbreak/\code{.m-value}), and navigation
+(\code{.nav-link}, with an \code{::before} left-edge accent bar for the
+active item) --- all styled from the same token set, so changing the
+accent color is a one-line edit in \file{tokens.css}, not a
+find-and-replace across the codebase.
+
+\section{Security Architecture}
+
+Every mechanism below was verified directly against the code that
+implements it, per this document's own accuracy requirement --- nothing
+here is claimed "secure" merely because Flask or a library nominally
+supports it.
+
+\subsection*{Authentication \& Password Hashing}
+
+Covered in full in Chapter~2, \S2.3: Argon2 hashing, generic error
+messages, timing-attack mitigation via a dummy-hash verification on
+every failure path, and a 5-attempt/15-minute lockout policy.
+
+\subsection*{Session Security}
+
+\code{SESSION\_COOKIE\_HTTPONLY = True} (always) and
+\code{SESSION\_COOKIE\_SAMESITE = "Lax"} (always) prevent, respectively,
+client-side script access to the cookie and most cross-site request
+delivery. \code{SESSION\_COOKIE\_SECURE} is \code{False} in
+development/testing (there is no HTTPS to require) and \code{True} in
+\code{ProductionConfig}. \code{PERMANENT\_SESSION\_LIFETIME} (12 hours)
+bounds how long a stolen or forgotten-open session cookie remains
+valid, independent of activity. Login also calls
+\code{session.clear()} before establishing the new session, discarding
+any pre-authentication state (session-fixation defense).
+
+\subsection*{Authorization \& Access Scopes}
+
+The whole of Chapter~2 --- \code{AccessScope}, defense-in-depth,
+\code{get\_scoped\_or\_404}'s 404-not-403 IDOR defense, and the
+manager/admin/employee boundaries --- applies here directly and is not
+repeated.
+
+\subsection*{CSRF Protection}
+
+Flask-WTF's \code{CSRFProtect} is initialized globally
+(\code{app.extensions.csrf}), so every state-changing \code{POST} route
+requires a valid CSRF token by default. Every form in
+\file{app/forms.py} is a \code{FlaskForm}, and every template renders
+\code{\{\{ form.hidden\_tag() \}\}} (or a manually-included
+\code{csrf\_token()} hidden field for the handful of button-only forms
+with no WTForms class, e.g.\ the logout form in \code{topbar.html}).
+\code{TestingConfig} disables CSRF (\code{WTF\_CSRF\_ENABLED = False})
+purely so route tests can post form data without simulating a token
+fetch first --- this setting is not reachable in \code{development} or
+\code{production}.
+
+\subsection*{Input Validation}
+
+Two layers: WTForms validators at the form boundary (\code{DataRequired},
+\code{Length}, \code{NumberRange}, \code{Optional}) reject malformed
+input before a route ever calls a service; every service function then
+re-validates the business meaning of its inputs (an employee id that
+doesn't exist in this organization, a date range where \code{end <
+start}, a rate that isn't positive) regardless of what the form already
+checked, raising a typed \code{ValidationError} the route flashes back
+to the user.
+
+\subsection*{SQL Injection Protection}
+
+Every database query in the codebase is built through SQLAlchemy's
+query API (\longcode{db.session.query(...).filter(...)}) --- there is no
+raw, string-interpolated SQL anywhere in \file{app/}, verified by
+searching for \code{execute(} and hand-built SQL strings. The few
+uses of SQLAlchemy's \code{text(...)} helper are DDL-time expressions
+inside model \code{\_\_table\_args\_\_} (a functional index expression,
+and the \code{'[]'} range-bounds literal for
+\code{daterange}\allowbreak/\code{tstzrange}
+exclusion constraints) --- fixed strings written by the developer, never
+built from request input.
+
+\subsection*{XSS Protection}
+
+Jinja2's autoescaping is on by default and is never bypassed: a search
+of every template confirmed there is no \code{|safe} filter, no
+\code{\{\% autoescape false \%\}}, and no \code{Markup(...)} call
+anywhere in the codebase. Every value interpolated into HTML --- an
+employee's name, a leave request's free-text reason, an audit log's
+JSON \code{changes} --- is escaped by the template engine before it
+reaches the browser.
+
+\subsection*{Content Security Policy}
+
+Every response carries:
+
+\begin{lstlisting}[frame=single]
+default-src 'self'; frame-ancestors 'none'; base-uri 'none';
+form-action 'self'; object-src 'none'
+\end{lstlisting}
+
+This is affordable specifically because the application serves no
+inline scripts, no external scripts/styles/fonts, and no embeddable
+content --- every design decision in \S6.1--6.2 above (self-hosted
+fonts, inline SVG icons instead of an icon font, data-attribute-driven
+JS instead of inline handlers) exists in service of this one policy
+holding without exceptions.
+
+\subsection*{Other Security Headers}
+
+Attached to every response by one \code{@app.after\_request} hook:
+\code{X-Content-Type-Options: nosniff}, \code{X-Frame-Options: DENY},
+\code{Referrer-Policy: strict-origin-when-cross-origin}, and ---
+conditionally, only when \code{SESSION\_COOKIE\_SECURE} is true, so a
+plain-HTTP development server never sends it ---
+\code{Strict-Transport-Security: max-age=31536000; includeSubDomains}.
+
+\subsection*{Secure Cookies \& Cache Control}
+
+Covered under Session Security above. \VERIFY{}: no explicit
+\code{Cache-Control} header is set on authenticated pages containing
+potentially sensitive data (labor cost, pay rates); this is not
+verified as either a real gap or a non-issue for this application's
+deployment model.
+
+\subsection*{Production Configuration}
+
+\code{ProductionConfig.\_\_init\_\_} raises \code{RuntimeError}
+immediately if \code{SECRET\_KEY} or \code{DATABASE\_URL} is missing
+from the environment --- the application cannot start in an insecure
+default state. An unrecognized \code{FLASK\_ENV} value also raises
+rather than silently falling back to \code{DevelopmentConfig} (which
+would otherwise mean \code{DEBUG=True} and no secure cookies/HSTS by
+mistake).
+
+\subsection*{Error Handling \& Sensitive Information Exposure}
+
+Every registered error handler (\S1.4, \S5.16) renders a generic
+template; the 500 handler specifically logs the real exception
+server-side via Python's \code{logging} module and never includes it in
+the response. \code{MAX\_CONTENT\_LENGTH} (1\,MB) makes the registered
+413 handler reachable and bounds request body size generally.
+\code{.env} (containing \code{DATABASE\_URL}/\code{SECRET\_KEY}) is
+listed in \file{.gitignore} and was not found committed to the
+repository.
+
+\section{Security Threat Model}
+
+\begin{center}
+\resizebox{0.92\textwidth}{!}{%
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[flownode, text width=4.4cm] (ext) {External user (browser)};
+  \node[flownode, text width=4.4cm, below left=1.0cm and 0.2cm of ext] (authn) {Authentication\\(lockout, generic errors)};
+  \node[flownode, text width=4.4cm, below right=1.0cm and 0.2cm of ext] (val) {Input validation\\(WTForms + service layer)};
+  \node[flownode, text width=6.4cm, below=1.6cm of ext] (authz) {Authorization\\(AccessScope, defense in depth)};
+  \node[flownode, text width=6.4cm, below=of authz] (svc) {Service layer\\(business rules, typed errors)};
+  \node[flownode, text width=6.4cm, below=of svc] (db) {PostgreSQL\\(constraints, composite FKs)};
+
+  \draw[flowarrow] (ext) -- (authn);
+  \draw[flowarrow] (ext) -- (val);
+  \draw[flowarrow] (authn) -- (authz);
+  \draw[flowarrow] (val) -- (authz);
+  \draw[flowarrow] (authz) -- (svc);
+  \draw[flowarrow] (svc) -- (db);
+\end{tikzpicture}%
+}
+\end{center}
+
+\textbf{Realistic threats this design specifically defends against:}
+
+\begin{itemize}
+  \item \textbf{A manager probing another department's data by editing
+        a URL/query parameter} (IDOR). Mitigated by
+        \code{get\_scoped\_or\_404} and every service function's own
+        scope filter, returning 404 rather than leaking existence via a
+        403. Directly tested by \file{tests/routes/test\_idor\_sweep.py}
+        and the manager-scoped filter tests added alongside the
+        \route{?employee\_id=}/\route{?department\_id=} filters
+        described in Chapter~7.
+  \item \textbf{Credential stuffing / brute force against login.}
+        Mitigated by the 5-attempt lockout and Argon2's inherent
+        cost per guess.
+  \item \textbf{Email enumeration via login timing.} Mitigated by the
+        dummy-hash verification on every non-success path.
+  \item \textbf{Session fixation / cookie replay.} Mitigated by
+        \code{session.clear()} before login, \code{HttpOnly}/\code{Secure}/
+        \code{SameSite} cookie flags, and an absolute 12-hour session
+        lifetime.
+  \item \textbf{Cross-site request forgery} on any state-changing
+        action. Mitigated by Flask-WTF's CSRF token on every form.
+  \item \textbf{Reflected/stored XSS} via a free-text field (a leave
+        reason, an attendance note, an audit \code{changes} value).
+        Mitigated by Jinja's default autoescaping, never bypassed.
+  \item \textbf{An unbounded report query as a self-inflicted denial of
+        service} (a caller-supplied \route{?start=}/\route{?end=}
+        spanning decades against a per-employee/per-day calculation
+        loop). Mitigated by a 92-day range clamp on the Overtime,
+        Hours Trend, and Labor Cost report routes.
+  \item \textbf{A manager inferring an individual's pay rate from an
+        aggregate total.} Explicitly \emph{not fully preventable} and
+        documented as such in \code{labor\_cost.department\_cost\_summary}'s
+        own docstring: the function guarantees it never \emph{directly}
+        returns a rate or per-employee figure, but cannot stop a
+        manager who separately knows one employee's hours for a range
+        from dividing the total to estimate a rate. The real mitigation
+        is workflow-level (department-wide reporting is the intended
+        use), not a technical guarantee.
+\end{itemize}
+
+\textbf{Explicitly out of scope for this threat model} (not present in
+the codebase, and not claimed to be): infrastructure-level threats
+(network segmentation, WAF, DDoS protection), client-device compromise,
+and social-engineering attacks against a legitimate admin's own
+credentials.

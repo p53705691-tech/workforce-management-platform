@@ -33,7 +33,7 @@ date-range-bounded, and paginated, exactly as it always was.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 
 from flask import abort, has_request_context, request
 
@@ -106,16 +106,29 @@ def list_entries(
     manager-reachable, enforced here independent of the route's own
     ``role_required("admin")``.
 
-    ``start``/``end`` are calendar dates; ``created_at`` is a
-    ``timestamptz``, so the comparison bounds are built explicitly in
-    UTC rather than compared to a bare date (never rely on an ambient
-    session timezone — see CLAUDE.md's time-and-money rule).
+    ``start``/``end`` are calendar dates in the organization's own
+    timezone (``app.routes.audit`` derives its defaults from
+    ``reports.today_business_date``, rule A1) — so the comparison bounds
+    against ``created_at`` (a ``timestamptz``) must be built in that same
+    timezone, not UTC. Building them in UTC instead used to silently drop
+    or shift a day's worth of entries for any organization not on UTC
+    (e.g. an evening event in a UTC-behind organization falls on the next
+    UTC calendar day and was excluded from "today"'s default window) —
+    never rely on an ambient session timezone for a comparison like this
+    (see CLAUDE.md's time-and-money rule), and never assume UTC is that
+    organization's timezone either.
     """
     if scope.role != "admin":
         abort(403)
 
-    range_start = datetime.combine(start, time.min, tzinfo=timezone.utc)
-    range_end = datetime.combine(end, time.min, tzinfo=timezone.utc) + timedelta(days=1)
+    # Imported here, not at module level: app.services.scheduling
+    # imports this module (for audit_service.record), so a top-level
+    # import here would be a circular import.
+    from app.services.scheduling import organization_timezone
+
+    tz = organization_timezone(scope)
+    range_start = datetime.combine(start, time.min, tzinfo=tz)
+    range_end = datetime.combine(end, time.min, tzinfo=tz) + timedelta(days=1)
 
     query = (
         db.session.query(AuditLog)

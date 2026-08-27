@@ -120,6 +120,15 @@ def _validate_employee_for_scope(scope: AccessScope, employee_id: int) -> Employ
 
 
 def _validate_leave_type(scope: AccessScope, leave_type_id: int) -> LeaveType:
+    """Confirm ``leave_type_id`` may be used for a new leave request.
+
+    Checks ``is_active`` as well as organization scope: ``list_leave_types``
+    (the only source a request form's dropdown is built from) already
+    excludes a deactivated leave type, so accepting one here would only
+    ever happen via a stale form or a direct POST — the same "reject
+    what the UI never actually offers" precedent as everywhere else
+    validation is duplicated between a listing and its write path.
+    """
     leave_type = (
         db.session.query(LeaveType)
         .filter(
@@ -128,7 +137,7 @@ def _validate_leave_type(scope: AccessScope, leave_type_id: int) -> LeaveType:
         )
         .first()
     )
-    if leave_type is None:
+    if leave_type is None or not leave_type.is_active:
         raise ValidationError(
             "Selected leave type does not exist in this organization.",
             field="leave_type_id",
@@ -169,26 +178,40 @@ def _get_leave_request_for_scope(scope: AccessScope, leave_request_id: int) -> L
     return leave_request
 
 
-def _commit_or_raise_overlap() -> None:
-    """Commit the session, translating an overlap-constraint violation.
+def _translate_leave_integrity_error(error: IntegrityError):
+    """Map a leave_requests constraint violation to a clean ``ValidationError``.
 
-    Any other ``IntegrityError`` is re-raised unchanged for the caller
-    (route layer) to handle — same pattern as
-    ``app.services.scheduling._commit_or_raise_overlap``.
+    Shared by ``_flush_or_raise_overlap``/``_commit_or_raise_overlap``
+    below, same split as ``app.services.scheduling``'s identical pair —
+    flush is needed when a caller must stage an audit entry first (see
+    ``app.services.audit``'s module docstring) before the one commit
+    that covers both.
     """
+    constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+    if constraint_name == _OVERLAP_EXCLUSION_CONSTRAINT:
+        raise ValidationError(
+            "This employee already has an overlapping pending or "
+            "approved leave request."
+        ) from error
+    raise error
+
+
+def _flush_or_raise_overlap() -> None:
+    """Flush the session, translating an overlap-constraint violation."""
+    try:
+        db.session.flush()
+    except IntegrityError as error:
+        db.session.rollback()
+        _translate_leave_integrity_error(error)
+
+
+def _commit_or_raise_overlap() -> None:
+    """Commit the session, translating an overlap-constraint violation."""
     try:
         db.session.commit()
     except IntegrityError as error:
         db.session.rollback()
-        constraint_name = getattr(
-            getattr(error.orig, "diag", None), "constraint_name", None
-        )
-        if constraint_name == _OVERLAP_EXCLUSION_CONSTRAINT:
-            raise ValidationError(
-                "This employee already has an overlapping pending or "
-                "approved leave request."
-            ) from error
-        raise
+        _translate_leave_integrity_error(error)
 
 
 def request_leave(
@@ -221,6 +244,11 @@ def request_leave(
     starts_at = _localize(starts_at, tz)
     ends_at = _localize(ends_at, tz)
 
+    if ends_at <= starts_at:
+        raise ValidationError(
+            "End date/time must be after the start date/time.", field="ends_at"
+        )
+
     leave_request = LeaveRequest(
         organization_id=scope.organization_id,
         employee_id=target_employee_id,
@@ -232,7 +260,18 @@ def request_leave(
         requested_by_user_id=scope.user_id,
     )
     db.session.add(leave_request)
-    _commit_or_raise_overlap()
+    _flush_or_raise_overlap()
+    audit_service.record(
+        "leave_requested",
+        "leave_request",
+        entity_id=leave_request.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": target_employee_id, "leave_type_id": leave_type_id},
+    )
+    # One commit covers both the request and the audit entry above — see
+    # app.services.audit's module docstring.
+    db.session.commit()
     return leave_request
 
 

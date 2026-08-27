@@ -1,12 +1,21 @@
+{% import "components/icons.html" as icons %}
 {# Shared navigation markup — single source of truth for sidebar nav items,
    so no other template hand-rolls a .nav-link/.nav-group pair (frontend.md:
    avoid duplicated CSS/markup). #}
 
 {% macro nav_group(label, sub=false, id=none) %}
-  <p class="nav-group{{ ' nav-group--sub' if sub else '' }}"{% if id %} id="{{ id }}"{% endif %}>{{ label }}</p>
+  {#
+    Visually hidden (.sr-only), not removed: a screen reader still
+    announces "People" / "Operations" / etc. as each <ul>'s accessible
+    name via aria-labelledby (see templates/components/sidebar.html),
+    but sighted users no longer see a text label sitting in the sidebar —
+    a per-link icon now carries that meaning instead, and group spacing
+    is purely visual (see .nav-group + .nav-list in layout.css).
+  #}
+  <p class="nav-group sr-only{{ ' nav-group--sub' if sub else '' }}"{% if id %} id="{{ id }}"{% endif %}>{{ label }}</p>
 {% endmacro %}
 
-{% macro nav_link(endpoint, label, extra_endpoints=()) %}
+{% macro nav_link(endpoint, label, icon=none, extra_endpoints=()) %}
   {#
     extra_endpoints: endpoints that should also light up this link's active
     state, for pages that hang off this nav item but aren't its own list
@@ -18,7 +27,8 @@
     <a href="{{ url_for(endpoint) }}"
        class="nav-link{{ ' active' if is_active else '' }}"
        {% if is_active %}aria-current="page"{% endif %}>
-      {{ label }}
+      {% if icon %}{{ icons.icon(icon) }}{% endif %}
+      <span>{{ label }}</span>
     </a>
   </li>
 {% endmacro %}

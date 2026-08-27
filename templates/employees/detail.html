@@ -1,54 +1,253 @@
 {% extends "base.html" %}
 
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
 {% block title %}{{ employee.first_name }} {{ employee.last_name }} — Workforce Management Platform{% endblock %}
 
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text profile-header">
+      <div class="profile-avatar">{{ employee.first_name[0] }}{{ employee.last_name[0] }}</div>
+      <div>
+        <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
+        <p class="text-muted">
+          {{ employee.employee_number }} &middot; {{ department_names.get(employee.department_id, employee.department_id) }}
+          &middot; {{ badges.status_badge(employee.employment_status, {"active": "success", "inactive": "neutral", "terminated": "danger"}) }}
+        </p>
+      </div>
+    </div>
+    <div class="page-header-actions">
+      {% if current_user.role == "admin" %}
+        <a class="btn btn-secondary" href="{{ url_for('employees.view_pay_rate', employee_id=employee.id) }}">View pay rate</a>
+        <a class="btn btn-secondary" href="{{ url_for('labor_cost.employee_detail', employee_id=employee.id) }}">View labor cost</a>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+
 {% block content %}
-  <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("users") }} Profile</h2>
+    <div class="field-grid">
+      <div class="field-item">
+        <span class="field-label">Employee number</span>
+        <span class="field-value">{{ employee.employee_number }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Department</span>
+        <span class="field-value">{{ department_names.get(employee.department_id, employee.department_id) }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Status</span>
+        <span class="field-value">{{ badges.status_badge(employee.employment_status, {"active": "success", "inactive": "neutral", "terminated": "danger"}) }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Email</span>
+        <span class="field-value">{{ employee.email or "—" }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Phone</span>
+        <span class="field-value">{{ employee.phone or "—" }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Hired on</span>
+        <span class="field-value">{{ employee.hired_on }}</span>
+      </div>
+      {% if employee.terminated_on %}
+        <div class="field-item">
+          <span class="field-label">Terminated on</span>
+          <span class="field-value">{{ employee.terminated_on }}</span>
+        </div>
+      {% endif %}
+    </div>
 
-  <dl>
-    <dt>Employee number</dt>
-    <dd>{{ employee.employee_number }}</dd>
-
-    <dt>Department</dt>
-    <dd>{{ department_names.get(employee.department_id, employee.department_id) }}</dd>
-
-    <dt>Status</dt>
-    <dd>{{ employee.employment_status }}</dd>
-
-    <dt>Email</dt>
-    <dd>{{ employee.email or "—" }}</dd>
-
-    <dt>Phone</dt>
-    <dd>{{ employee.phone or "—" }}</dd>
-
-    <dt>Hired on</dt>
-    <dd>{{ employee.hired_on }}</dd>
-
-    {% if employee.terminated_on %}
-      <dt>Terminated on</dt>
-      <dd>{{ employee.terminated_on }}</dd>
+    {% if can_edit and edit_form %}
+      <details class="create-disclosure"{% if edit_form.errors %} open{% endif %}>
+        <summary class="btn btn-secondary">Edit profile</summary>
+        {% with form = edit_form %}
+          <form method="post" action="{{ url_for('employees.update_employee', employee_id=employee.id) }}" novalidate>
+            {{ form.hidden_tag() }}
+            {% include "employees/form.html" %}
+            <button type="submit" class="btn btn-primary">Save changes</button>
+          </form>
+        {% endwith %}
+      </details>
     {% endif %}
-  </dl>
+  </div>
 
-  {% if can_edit and edit_form %}
-    <h2>Edit employee</h2>
-    {% set form = edit_form %}
-    <form method="post" action="{{ url_for('employees.update_employee', employee_id=employee.id) }}" novalidate>
-      {{ form.hidden_tag() }}
-      {% include "employees/form.html" %}
-      <button type="submit">Save changes</button>
-    </form>
+  {# One Account card instead of three separate ones (Account field +
+     "Create login account" + "Reset password") — the current state and
+     its one relevant action belong together, and the action is a
+     disclosure rather than an always-open form, matching this app's
+     existing create-employee/new-shift pattern. #}
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("users") }} Account</h2>
+    {% if linked_user %}
+      <div class="field-grid">
+        <div class="field-item">
+          <span class="field-label">Sign-in email</span>
+          <span class="field-value">{{ linked_user.email }}</span>
+        </div>
+        <div class="field-item">
+          <span class="field-label">Role</span>
+          <span class="field-value">{{ linked_user.role | title }}</span>
+        </div>
+        <div class="field-item">
+          <span class="field-label">Account status</span>
+          <span class="field-value">
+            {% if linked_user.is_active %}
+              <span class="badge badge-success">Active</span>
+            {% else %}
+              <span class="badge badge-danger">Disabled</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+
+      {% if reset_password_form %}
+        <details class="create-disclosure"{% if reset_password_form.errors %} open{% endif %}>
+          <summary class="btn btn-secondary">Reset password</summary>
+          <p class="text-muted">
+            Use this if the employee forgot their password or is locked out — there is no
+            self-service "forgot password" email in this system. Share the new password
+            with them directly and out of band.
+          </p>
+          <form method="post" action="{{ url_for('employees.reset_employee_account_password', employee_id=employee.id) }}" novalidate
+                data-confirm="Reset this employee's password? Their current password will stop working immediately.">
+            {{ reset_password_form.hidden_tag() }}
+            <div class="form-field">
+              {{ reset_password_form.new_password.label }}
+              {{ reset_password_form.new_password() }}
+              {% for error in reset_password_form.new_password.errors %}
+                <p class="field-error">{{ error }}</p>
+              {% endfor %}
+            </div>
+            <div class="form-field">
+              {{ reset_password_form.confirm_new_password.label }}
+              {{ reset_password_form.confirm_new_password() }}
+              {% for error in reset_password_form.confirm_new_password.errors %}
+                <p class="field-error">{{ error }}</p>
+              {% endfor %}
+            </div>
+            <button type="submit" class="btn btn-secondary">Reset password</button>
+          </form>
+        </details>
+      {% endif %}
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("user-x") }}
+        <h4>No login account</h4>
+        <p>This employee cannot sign in until an account is created.</p>
+      </div>
+
+      {% if create_account_form %}
+        <details class="create-disclosure"{% if create_account_form.errors %} open{% endif %}>
+          <summary class="btn btn-primary">Create login account</summary>
+          <form method="post" action="{{ url_for('employees.create_employee_account', employee_id=employee.id) }}" novalidate>
+            {{ create_account_form.hidden_tag() }}
+            <div class="form-field">
+              {{ create_account_form.email.label }}
+              {{ create_account_form.email() }}
+              {% for error in create_account_form.email.errors %}
+                <p class="field-error">{{ error }}</p>
+              {% endfor %}
+            </div>
+            <div class="form-field">
+              {{ create_account_form.password.label }}
+              {{ create_account_form.password() }}
+              {% for error in create_account_form.password.errors %}
+                <p class="field-error">{{ error }}</p>
+              {% endfor %}
+            </div>
+            <button type="submit" class="btn btn-primary">Create account</button>
+          </form>
+        </details>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if can_edit %}
+    <div class="dashboard-grid">
+      <div class="card">
+        <h3 class="card-title">{{ icons.icon("calendar") }} Upcoming Shifts</h3>
+        {% if upcoming_shifts %}
+          <div class="table-wrap table-cards-mobile">
+            <table>
+              <thead>
+                <tr><th>Date</th><th>Starts</th><th>Ends</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {% for shift in upcoming_shifts %}
+                  <tr>
+                    <td data-label="Date">{{ shift.business_date }}</td>
+                    <td data-label="Starts">{{ shift.starts_at | local_dt(tz) }}</td>
+                    <td data-label="Ends">{{ shift.ends_at | local_dt(tz) }}</td>
+                    <td data-label="Status">{{ badges.status_badge(shift.status, {"draft": "neutral", "published": "info", "cancelled": "danger"}) }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="state-card">
+            {{ icons.icon("calendar") }}
+            <h4>No upcoming shifts</h4>
+            <p>Nothing scheduled for this employee in the next 14 days.</p>
+          </div>
+        {% endif %}
+        <a class="btn btn-secondary" href="{{ url_for('schedule.list_shifts') }}">View full schedule</a>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">{{ icons.icon("clock") }} Recent Attendance</h3>
+        {% if recent_attendance %}
+          <div class="table-wrap table-cards-mobile">
+            <table>
+              <thead>
+                <tr><th>Date</th><th>Started</th><th>Ended</th><th>Status</th><th>Worked</th></tr>
+              </thead>
+              <tbody>
+                {% for row in recent_attendance %}
+                  <tr>
+                    <td data-label="Date">{{ row.entry.business_date }}</td>
+                    <td data-label="Started">{{ row.entry.started_at | local_dt(tz) }}</td>
+                    <td data-label="Ended">{{ row.entry.ended_at | local_dt(tz) if row.entry.ended_at else "—" }}</td>
+                    <td data-label="Status">{{ badges.status_badge(row.entry.status, {"open": "info", "closed": "success", "needs_review": "warning"}) }}</td>
+                    <td data-label="Worked">{{ "%.2fh"|format(row.worked_hours) if row.worked_hours is not none else "—" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="state-card">
+            {{ icons.icon("clock") }}
+            <h4>No recent attendance</h4>
+            <p>No attendance was recorded for this employee in the last 7 days.</p>
+          </div>
+        {% endif %}
+        <a class="btn btn-secondary" href="{{ url_for('attendance.list_entries', employee_id=employee.id) }}">View full attendance</a>
+      </div>
+    </div>
   {% endif %}
 
   {% if terminate_form %}
-    <h2>Terminate employee</h2>
-    <form method="post" action="{{ url_for('employees.terminate_employee', employee_id=employee.id) }}" novalidate>
-      {{ terminate_form.hidden_tag() }}
-      <div class="form-field">
-        {{ terminate_form.terminated_on.label }}
-        {{ terminate_form.terminated_on() }}
-      </div>
-      <button type="submit">Terminate</button>
-    </form>
+    <div class="card card--danger">
+      <h2 class="card-title">{{ icons.icon("alert-triangle") }} Danger Zone</h2>
+      <p class="text-muted">Terminating an employee cannot be undone from this page.</p>
+      <details class="create-disclosure"{% if terminate_form.errors %} open{% endif %}>
+        <summary class="btn btn-danger">Terminate employee</summary>
+        <form method="post" action="{{ url_for('employees.terminate_employee', employee_id=employee.id) }}" novalidate
+              data-confirm="Terminate {{ employee.first_name }} {{ employee.last_name }}? This cannot be undone from this page.">
+          {{ terminate_form.hidden_tag() }}
+          <div class="form-field">
+            {{ terminate_form.terminated_on.label }}
+            {{ terminate_form.terminated_on() }}
+          </div>
+          <button type="submit" class="btn btn-danger">Confirm termination</button>
+        </form>
+      </details>
+    </div>
   {% endif %}
 {% endblock %}

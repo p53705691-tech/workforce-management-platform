@@ -60,8 +60,16 @@
   --info: 262 42% 50%;
   --done: 200 60% 36%;
 
-  /* ---- elevation (used sparingly — modals, dropdowns; not cards/tables) ---- */
+  /* ---- elevation ----
+     --shadow-elevated: temporarily-floating UI only (modals, dropdowns) —
+     unchanged. --shadow-card: a much subtler lift for persistent content
+     surfaces (.card only — never .table-wrap/.state-card/filter bars,
+     which stay flat/functional), the "paper lifted slightly off the
+     background" touch modern flat dashboards use instead of a visible
+     border alone. Barely perceptible by design (ui-ux.md: avoid
+     excessive shadows) — a hint of depth, not a drop-shadow effect. */
   --shadow-elevated: 0 4px 20px -6px hsl(222 30% 10% / 0.18), 0 1px 2px hsl(222 30% 10% / 0.08);
+  --shadow-card: 0 1px 2px hsl(222 30% 10% / 0.04), 0 1px 1px hsl(222 30% 10% / 0.03);
 
   /* ---- type ----
      --font-body (Figtree) is the PRIMARY UI font: body copy, labels,
@@ -88,9 +96,18 @@
   --sp-5: 1.25rem;  --sp-6: 1.5rem;   --sp-8: 2rem;      --sp-10: 2.5rem;
   --sp-12: 3rem;    --sp-16: 4rem;    --sp-24: 6rem;
 
-  /* ---- radius — sharp on containers (cards/tables), soft on controls ---- */
-  --radius-control: 6px;
-  --radius-flat: 2px;
+  /* ---- radius —
+     A deliberate step away from Phase 1's original sharp-cornered
+     ("flat") container treatment toward the softer, more contemporary
+     corner radii used across most current mainstream SaaS products
+     (Linear, Notion, Vercel, Stripe Dashboard) — restrained, not the
+     "giant rounded card" look ui-ux.md explicitly warns against.
+     --radius-control: buttons/inputs. --radius-lg: containers (cards,
+     tables, filter bars, dropdown panels) — renamed from the old
+     --radius-flat now that "flat" no longer describes its value.
+     --radius-pill: unchanged (badges, pill shapes). */
+  --radius-control: 8px;
+  --radius-lg: 10px;
   --radius-pill: 999px;
 
   --transition-fast: 120ms ease;

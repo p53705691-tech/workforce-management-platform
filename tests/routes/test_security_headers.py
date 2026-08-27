@@ -4,7 +4,11 @@ by ``app.create_app``'s ``after_request`` hook.
 
 import pytest
 
+from tests.factories import make_organization, make_user
+
 pytestmark = pytest.mark.route
+
+PASSWORD = "correct horse battery staple"
 
 
 def test_response_includes_baseline_hardening_headers(client):
@@ -48,6 +52,26 @@ def test_hsts_header_is_absent_when_session_cookie_secure_is_false(client, app):
     response = client.get("/login")
 
     assert "Strict-Transport-Security" not in response.headers
+
+
+def test_login_page_has_no_cache_control_no_store(client):
+    # An unauthenticated page (the login form itself) has nothing
+    # sensitive to protect against caching -- only an authenticated
+    # response needs no-store.
+    response = client.get("/login")
+
+    assert response.headers.get("Cache-Control") != "no-store"
+
+
+def test_authenticated_page_is_not_cached(client, db_session):
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    client.post("/login", data={"email": admin.email, "password": PASSWORD})
+
+    response = client.get("/dashboard")
+
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
 
 
 def test_hsts_header_is_present_when_session_cookie_secure_is_true(client, app):

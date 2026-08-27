@@ -1,0 +1,720 @@
+\chapter{Page-by-Page Documentation}
+
+Every substantive page in the application is documented below, in the
+order a user would encounter them. Error pages (400/403/404/413/500)
+are covered as a group at the end of this chapter rather than
+individually, since they share one template pattern and no
+business logic. Wireframes are simplified representations of the
+actual rendered layout (sidebar + topbar are omitted from most
+wireframes below the login page, since every authenticated page shares
+the same shell --- see Chapter~6).
+
+\section{Login}
+
+\pf{Purpose}{The only entry point for an unauthenticated visitor;
+establishes a session.}
+\pf{Route}{\route{GET/POST /login}}
+\pf{Access}{Public. An already-authenticated user is redirected to the
+dashboard instead of seeing the form again.}
+\pf{Main UI elements}{Email field, password field, submit button, a
+flashed error banner on failure.}
+\pf{Data displayed}{Nothing from the database --- a static form.}
+\pf{User actions}{Submit credentials.}
+\pf{Backend route}{\code{auth.login} (\file{app/routes/auth.py})}
+\pf{Service functions}{\code{auth.service.authenticate}}
+\pf{Database data involved}{\code{users} (read for the credential
+check and lockout state; written on both success and failure to update
+\code{failed\_login\_count}/\code{locked\_until}/\code{last\_login\_at}).}
+\pf{Authorization}{None required to view; the route itself contains the
+only authorization logic in the system that runs \emph{before} anyone is
+authenticated.}
+\pf{Validation}{Both fields required (WTForms \code{DataRequired}); no
+email-format validation (deliberately --- an invalid format simply
+won't match any account).}
+\pf{Edge cases}{Wrong password, nonexistent email, inactive account,
+and locked account all show the identical generic error (Chapter~2). A
+successful login honors a same-site \route{?next=} redirect target and
+rejects anything else.}
+\pf{Error states}{A flashed banner; the form is always safe to
+resubmit.}
+\pf{Related pages}{Redirects successfully to the Dashboard.}
+\pf{Source files}{\file{app/routes/auth.py}, \file{app/auth/service.py},
+\file{templates/auth/login.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++----------------------------------------+
+|      Workforce Management Platform      |
+|                                          |
+|   [ Email                            ]  |
+|   [ Password                         ]  |
+|              [ Log in ]                 |
++----------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Dashboard --- Admin / Manager View}
+
+\pf{Purpose}{"What is happening with the workforce right now" --- the
+main operational landing page for admin/manager.}
+\pf{Route}{\route{GET /dashboard}}
+\pf{Access}{Admin (org-wide), manager (their managed departments).}
+\pf{Main UI elements}{Metric grid (total employees, working today,
+absent today, on leave today), a "Requiring Attention" panel, detail
+tables (working/absent/on-leave/coverage), a labor-cost summary card,
+an optional department filter.}
+\pf{Data displayed}{Headline counts; a list of attendance entries
+flagged \code{needs\_review} and employees missing pay-rate/policy
+configuration; per-department coverage and labor-cost totals.}
+\pf{User actions}{Filter by department; follow links into Attendance,
+Employees, or Labor Cost for detail.}
+\pf{Backend route}{\code{dashboard.index}, delegating to
+\code{\_manager\_or\_admin\_dashboard} (\file{app/routes/dashboard.py})}
+\pf{Service functions}{\code{reports.who\_is\_working\_today},
+\code{reports.who\_is\_absent\_today},
+\longcode{reports.who\_is\_on\_leave\_today},
+\longcode{reports.attendance\_needing\_review},
+\longcode{labor\_cost.department\_cost\_summary}}
+\pf{Database data involved}{\code{shifts}, \code{attendance\_entries},
+\code{leave\_requests}, \code{employees}, \code{employee\_pay\_rates},
+\code{overtime\_policies} (indirectly, via labor cost).}
+\pf{Authorization}{\code{role\_required} is not on this specific view
+function --- \code{login\_required} covers the whole
+\code{dashboard.index} route, which internally branches to the
+employee dashboard for an employee-role caller; every underlying
+\code{reports.*} call re-checks role/department scope itself.}
+\pf{Validation}{An optional \route{?department\_id=} is a plain
+integer filter; no format validation needed beyond that.}
+\pf{Edge cases}{An employee with worked hours but no configured pay
+rate/overtime policy no longer blanks the whole department's cost
+total --- they are excluded and counted explicitly (\S4.6).}
+\pf{Error states}{A \code{ValidationError} from the underlying labor
+cost calculation is flashed, not raised as a 500.}
+\pf{Related pages}{Employees, Attendance, Schedule, Leave, Labor Cost,
+Reports --- this page is the hub linking to all of them.}
+\pf{Source files}{\file{app/routes/dashboard.py},
+\file{templates/dashboard/admin.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| Dashboard                                              |
++------------------------------------------------------+
+| [Employees] [Working] [Absent] [On Leave]  <- metrics  |
++------------------------------------------------------+
+| Requiring Attention (needs-review entries, gaps)       |
++------------------------------------------------------+
+| Working Today   | Absent Today  | On Leave | Coverage  |
++------------------------------------------------------+
+| Labor Cost (department totals)                         |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Dashboard --- Employee View}
+
+\pf{Purpose}{A personal "what's my status right now" landing page.}
+\pf{Route}{\route{GET /dashboard} (same route, branches by role)}
+\pf{Access}{Employee role only (own data).}
+\pf{Main UI elements}{A prominent status card (Clock In / Currently
+Working / Attendance Needs Review), a metric grid (upcoming shifts,
+hours in the last 7 days, pending leave count), upcoming shifts table,
+recent hours table, leave requests table.}
+\pf{Data displayed}{The caller's own shifts, attendance, and leave
+only.}
+\pf{User actions}{Clock in / clock out; nothing else is writable from
+this page.}
+\pf{Backend route}{\code{dashboard.index} $\to$
+\code{\_employee\_dashboard}}
+\pf{Service functions}{\code{reports.current\_attendance\_status},
+\code{scheduling.list\_shifts}, \longcode{working\_hours.scheduled\_vs\_worked},
+\code{leave.list\_leave\_requests}}
+\pf{Database data involved}{\code{shifts}, \code{attendance\_entries},
+\code{leave\_requests} --- all filtered to \code{scope.employee\_id}.}
+\pf{Authorization}{Every underlying call is scoped to the caller's own
+\code{employee\_id}; there is no parameter on this page that could
+target another employee.}
+\pf{Validation}{None (no form inputs beyond the Clock In/Out buttons).}
+\pf{Edge cases}{Three distinct states are rendered, not two: working,
+\emph{needs review} (no button offered --- see \S4.4), or not clocked
+in. This distinction exists specifically to avoid presenting a Clock
+Out button that would always fail against a flagged entry.}
+\pf{Error states}{A failed clock-in/out attempt (e.g.\ a race against
+the open-entry index) is flashed as a friendly message, never a raw
+500.}
+\pf{Related pages}{Attendance (full history), Schedule (full upcoming
+list), Leave.}
+\pf{Source files}{\file{app/routes/dashboard.py},
+\file{templates/dashboard/employee.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| My Dashboard                                           |
++------------------------------------------------------+
+| [ Currently Working / Not Clocked In ]  [Clock Out/In] |
++------------------------------------------------------+
+| [Upcoming Shifts] [Hours 7d] [Pending Leave]            |
++------------------------------------------------------+
+| Upcoming Shifts table   | Recent Hours table            |
++------------------------------------------------------+
+| My Leave Requests                                       |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Employees --- List}
+
+\pf{Purpose}{The organization's staff directory.}
+\pf{Route}{\route{GET/POST /employees}}
+\pf{Access}{Admin (all employees), manager (their departments). Not
+reachable by an employee-role user at all.}
+\pf{Main UI elements}{Department/status filters, an "Add employee"
+disclosure (admin only), a table of employees with avatar-initial,
+name, employee number, department, status.}
+\pf{Data displayed}{Every employee visible to the caller's scope.}
+\pf{User actions}{Filter; create a new employee (admin only); click
+through to a detail page.}
+\pf{Backend route}{\code{employees.list\_employees} /
+\code{employees.create\_employee}}
+\pf{Service functions}{\code{employees.list\_employees},
+\code{employees.create\_employee}, \code{departments.list\_departments}}
+\pf{Database data involved}{\code{employees}, \code{departments}.}
+\pf{Authorization}{\code{role\_required("admin", "manager")} on the
+route; \code{create\_employee} additionally checks
+\code{scope.role == "admin"} inside the service.}
+\pf{Validation}{Department/status filters are plain query parameters,
+filtered in Python over an already-scoped list (no route-level
+whitelist on the status value --- \VERIFY{} whether this should reject
+an unrecognized status rather than silently returning no results).}
+\pf{Edge cases}{A filtered view with zero matches is distinguished from
+a genuinely empty roster ("No employees match this filter" vs.\ "No
+employees yet").}
+\pf{Error states}{An \code{IntegrityError} on create (duplicate
+employee number/email) is flashed, not a raw 500.}
+\pf{Related pages}{Employee Detail, Departments, Schedule (assignment).}
+\pf{Source files}{\file{app/routes/employees.py},
+\file{templates/employees/list.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| Employees                          [+ Add employee]   |
++------------------------------------------------------+
+| Department [v]  Status [v]              [ Filter ]    |
++------------------------------------------------------+
+| Employee          | Department | Status                |
+| JS John Smith     | Kitchen    | Active                |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Employee Detail}
+
+\pf{Purpose}{A single employee's full profile, plus (for admin/manager)
+a quick view of their schedule and attendance.}
+\pf{Route}{\route{GET/POST /employees/<id>}}
+\pf{Access}{Admin (any employee), manager (their departments), or the
+employee themselves (their own record only).}
+\pf{Main UI elements}{Profile card (contact info, status, linked login
+account), an edit form (admin, or manager within scope), a terminate
+form (admin only), and --- admin/manager only --- Upcoming Shifts and
+Recent Attendance cards.}
+\pf{Data displayed}{Employee profile fields; the linked \code{User}
+account's email/role/active status, if any; (admin/manager) the next
+14 days of shifts and the last 7 days of attendance.}
+\pf{User actions}{Edit profile; terminate (admin); navigate to Pay Rate
+or Labor Cost (admin only, via links in the page header).}
+\pf{Backend route}{\code{employees.get\_employee} /
+\code{employees.update\_employee} / \code{employees.terminate\_employee}}
+\pf{Service functions}{\code{employees.get\_employee},
+\code{employees.get\_linked\_user}, \code{scheduling.list\_shifts},
+\code{reports.attendance\_entries\_with\_context}}
+\pf{Database data involved}{\code{employees}, \code{users},
+\code{shifts}, \code{attendance\_entries}.}
+\pf{Authorization}{\code{employees.get\_employee} 404s an employee
+attempting to view anyone but themselves; the Upcoming Shifts/Recent
+Attendance sections are computed and rendered only when \code{can\_edit}
+is true (admin, or manager within scope) --- an employee viewing their
+own page never sees them (that information already lives on their own
+dashboard).}
+\pf{Validation}{Standard WTForms field validation on the edit form.}
+\pf{Edge cases}{An employee with no linked login account shows "No
+login account linked" rather than a blank field.}
+\pf{Error states}{A 404 for an out-of-scope employee id (never a 403,
+per the IDOR-defense convention in Chapter~2).}
+\pf{Related pages}{Employees list, Pay Rate, Labor Cost breakdown,
+Schedule, Attendance.}
+\pf{Source files}{\file{app/routes/employees.py},
+\file{templates/employees/detail.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| John Smith                    [Edit] [Pay rate] [Cost] |
++------------------------------------------------------+
+| Profile: number, department, status, email, account    |
++------------------------------------------------------+
+| Upcoming Shifts table   | Recent Attendance table       |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Employee Pay Rate}
+
+\pf{Purpose}{View and set an employee's hourly-rate history.}
+\pf{Route}{\route{GET/POST /employees/<id>/pay-rate}}
+\pf{Access}{Admin only --- never a manager, per rule A4.}
+\pf{Main UI elements}{A history table (rate, effective from/to) and a
+"set new rate" form.}
+\pf{Data displayed}{Every historical rate period for the employee.}
+\pf{User actions}{Add a new effective-dated rate.}
+\pf{Backend route}{\code{employees.view\_pay\_rate} /
+\code{employees.set\_pay\_rate}}
+\pf{Service functions}{\code{pay\_rates.list\_pay\_rate\_history},
+\code{pay\_rates.set\_pay\_rate}}
+\pf{Database data involved}{\code{employee\_pay\_rates}.}
+\pf{Authorization}{\code{role\_required("admin")} on the route,
+re-checked inside both service functions.}
+\pf{Validation}{Rate must be $> 0$; effective-to (if given) must be on
+or after effective-from; the database's exclusion constraint is the
+final authority against an overlapping period.}
+\pf{Edge cases}{An overlapping rate period is rejected with a friendly
+message, not a raw constraint-violation error.}
+\pf{Error states}{\code{ValidationError} flashed on an invalid range
+or overlap.}
+\pf{Related pages}{Employee Detail, Labor Cost (employee breakdown).}
+\pf{Source files}{\file{app/routes/employees.py},
+\file{app/services/pay\_rates.py}, \file{templates/employees/pay\_rate.html}}
+
+\section{Departments}
+
+\pf{Purpose}{Manage the organization's department list.}
+\pf{Route}{\route{GET/POST /departments}, \route{POST
+/departments/<id>}, \route{POST /departments/<id>/deactivate}}
+\pf{Access}{Admin (full CRUD + deactivate); manager (view only, scoped
+to managed departments).}
+\pf{Main UI elements}{A table of departments (name, code, status), an
+edit form per row (admin), a create form (admin), a deactivate action
+(admin).}
+\pf{Data displayed}{Every department visible to the caller.}
+\pf{User actions}{Create, edit, deactivate (admin only).}
+\pf{Backend route}{\code{departments.list\_departments} /
+\code{create\_department} / \code{update\_department} /
+\code{deactivate\_department}}
+\pf{Service functions}{\code{departments.*} (all of them).}
+\pf{Database data involved}{\code{departments}.}
+\pf{Authorization}{List route is \code{role\_required("admin",
+"manager")}; every write route is \code{role\_required("admin")},
+re-checked inside the service.}
+\pf{Validation}{Name/code required; case-insensitive name uniqueness
+and \code{(organization\_id, code)} uniqueness enforced at the
+database level.}
+\pf{Edge cases}{Deactivation never deletes the row --- employees and
+historical schedules may still reference it.}
+\pf{Error states}{A duplicate name/code on create/update is flashed as
+"name or code already in use," not a raw constraint error.}
+\pf{Related pages}{Employees, Schedule, Labor Cost.}
+\pf{Source files}{\file{app/routes/departments.py},
+\file{templates/departments/list.html}}
+
+\section{Schedule}
+
+\pf{Purpose}{The planned-work calendar.}
+\pf{Route}{\route{GET/POST /schedule}, plus \route{/schedule/<id>},
+\route{/schedule/<id>/assign}, \route{/schedule/<id>/publish},
+\route{/schedule/<id>/cancel}}
+\pf{Access}{Everyone can view (employees see only their own published
+shifts); admin/manager can create/edit/assign/publish/cancel.}
+\pf{Main UI elements}{Date-range and department filters, a "New shift"
+disclosure, a table (date, start, end, hours, department, employee,
+status, actions).}
+\pf{Data displayed}{Shifts in the selected window, scoped by role.}
+\pf{User actions}{Create, edit (draft only), assign/reassign an
+employee, publish, cancel.}
+\pf{Backend route}{\code{schedule.list\_shifts} and the write actions
+listed above.}
+\pf{Service functions}{\code{scheduling.*} (all of them).}
+\pf{Database data involved}{\code{shifts}, \code{employees},
+\code{departments}, and (for conflict checks) \code{leave\_requests}.}
+\pf{Authorization}{View is \code{login\_required}; every write is
+\code{role\_required("admin", "manager")}, with manager department
+scoping re-checked inside every \code{scheduling.*} write function.}
+\pf{Validation}{End time after start time and a 24-hour span cap are
+database-enforced; overlap and approved-leave conflicts are checked
+before every create/reassign/time-edit.}
+\pf{Edge cases}{An unassigned shift shows a warning badge, not silent
+blank text; a shift cannot be published without an assigned employee;
+an out-of-range date filter shows an explicit "invalid date range"
+state rather than a misleading "no shifts" message.}
+\pf{Error states}{Overlap/leave-conflict violations are flashed as
+friendly, specific messages (Chapter~3's exclusion constraints,
+translated by \code{\_commit\_or\_raise\_overlap}).}
+\pf{Related pages}{Employees, Leave (conflict source), Dashboard
+(coverage summary).}
+\pf{Source files}{\file{app/routes/schedule.py},
+\file{templates/schedule/list.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| Schedule                              [+ New shift]   |
++------------------------------------------------------+
+| From [ ] To [ ]  Department [v]         [ Filter ]     |
++------------------------------------------------------+
+| Date  Start  End  Hours  Dept  Employee  Status  Acts  |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Attendance}
+
+\pf{Purpose}{The actual record of who worked when; the primary
+clock-in/clock-out surface.}
+\pf{Route}{\route{GET /attendance}, \route{POST /attendance/clock-in},
+\route{POST /attendance/<id>/clock-out}, \route{POST
+/attendance/<id>/correct}}
+\pf{Access}{Everyone can view (employees see only their own entries);
+admin/manager can correct any entry in scope and clock in/out on behalf
+of others.}
+\pf{Main UI elements}{A personal status card (employee only), a
+date-range filter plus an employee filter (admin/manager), a table
+(date, started, ended, status, worked hours, source, actions).}
+\pf{Data displayed}{Attendance entries in the selected window, each
+enriched with computed worked-duration and lateness against a matched
+shift.}
+\pf{User actions}{Clock in/out (self, or on behalf of others for
+admin/manager); correct an entry (admin/manager, mandatory reason).}
+\pf{Backend route}{\code{attendance.list\_entries} and the write
+actions listed above.}
+\pf{Service functions}{\longcode{attendance.clock\_in/clock\_out/correct\_entry},
+\longcode{reports.attendance\_entries\_with\_context},
+\longcode{reports.current\_attendance\_status}}
+\pf{Database data involved}{\code{attendance\_entries}, \code{shifts}
+(for the matched-shift/lateness display).}
+\pf{Authorization}{View is \code{login\_required}; \code{correct\_entry}
+is \code{role\_required("admin", "manager")}; clock-in/out on someone
+else's behalf requires admin/manager, re-checked inside the service.}
+\pf{Validation}{A backdated clock-in/out (admin/manager only) is capped
+at 90 days in the past and can never be in the future; a correction
+requires a non-blank reason.}
+\pf{Edge cases}{A \code{needs\_review} entry never offers a Clock Out
+button (it would always fail) --- only a correction can resolve it;
+this status is detected by an unbounded lookup on
+\code{ended\_at IS NULL}, not a recent-days window, specifically so an
+old, still-unresolved entry is never missed (see the note on this fix
+in Chapter~7).}
+\pf{Error states}{A friendly message for a duplicate clock-in, an
+already-closed entry, or a needs-review clock-out attempt --- never a
+raw 500 from the underlying database constraint.}
+\pf{Related pages}{Dashboard (personal status card), Employee Detail
+(recent attendance), Schedule (matched shift source).}
+\pf{Source files}{\file{app/routes/attendance.py},
+\file{templates/attendance/list.html}}
+
+\begin{center}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
++------------------------------------------------------+
+| Attendance                                             |
++------------------------------------------------------+
+| [ Currently Working / Not Clocked In ]  [Clock Out/In] |
++------------------------------------------------------+
+| From [ ] To [ ]  Employee [v]           [ Filter ]     |
++------------------------------------------------------+
+| Date  Started  Ended  Status  Worked  Source  Actions  |
++------------------------------------------------------+
+\end{lstlisting}
+\end{center}
+
+\section{Leave}
+
+\pf{Purpose}{Request and manage time off.}
+\pf{Route}{\route{GET/POST /leave}, plus approve/reject/cancel actions}
+\pf{Access}{Everyone can view (employees see only their own requests)
+and request leave; admin/manager can approve/reject/cancel within
+scope.}
+\pf{Main UI elements}{Status and employee filters (admin/manager), a
+request form, a table (dates, employee, type, status, reason, actions),
+inline conflict warnings.}
+\pf{Data displayed}{Leave requests in scope; for a pending request,
+any conflicting published shift.}
+\pf{User actions}{Request leave; approve/reject (with a mandatory
+reason for rejection); cancel.}
+\pf{Backend route}{\code{leave.list\_requests} and the write actions.}
+\pf{Service functions}{\code{leave.*} (all of them),
+\code{leave.conflicting\_shifts\_for}}
+\pf{Database data involved}{\code{leave\_requests}, \code{leave\_types},
+\code{shifts} (conflict detection).}
+\pf{Authorization}{View/request is \code{login\_required};
+approve/reject is \code{role\_required("admin", "manager")}; cancel is
+open to the owner (while pending) or admin/manager (any status),
+enforced inside \code{cancel\_leave} itself.}
+\pf{Validation}{Rejection requires a non-blank reason; an overlapping
+pending/approved request for the same employee is rejected by the
+database's exclusion constraint.}
+\pf{Edge cases}{Self-approval is explicitly blocked, even for an
+admin/manager who is also the requesting employee; approving over a
+published shift is blocked with the specific conflicting shift(s)
+named.}
+\pf{Error states}{A friendly, specific conflict message rather than a
+generic failure.}
+\pf{Related pages}{Schedule (conflict source), Dashboard ("on leave
+today").}
+\pf{Source files}{\file{app/routes/leave.py},
+\file{templates/leave/list.html}}
+
+\section{Overtime Report}
+
+\pf{Purpose}{Per-employee overtime hours for a department/date range.}
+\pf{Route}{\route{GET /reports/overtime}}
+\pf{Access}{Admin, manager (their departments).}
+\pf{Main UI elements}{Department + date-range filter, a table
+(employee, overtime hours), a total row, cross-navigation to Hours
+Trend and Labor Cost for the same filter.}
+\pf{Data displayed}{Overtime \emph{hours} only --- never a rate or a
+cost figure (rule A4).}
+\pf{User actions}{Filter; navigate to related reports.}
+\pf{Backend route}{\code{dashboard.overtime\_report}}
+\pf{Service functions}{\code{reports.overtime\_summary}}
+\pf{Database data involved}{\code{attendance\_entries},
+\code{overtime\_policies}/\code{overtime\_tiers}, \code{employee\_pay\_rates}
+(read internally to price line items, never rendered here).}
+\pf{Authorization}{\code{role\_required("admin", "manager")}, with
+manager department scoping re-checked inside the service.}
+\pf{Validation}{An excessively wide date range is clamped to 92 days
+before the underlying per-employee/per-day calculation runs (Chapter~6).}
+\pf{Edge cases}{An employee with no configured pay rate/policy shows
+"Not available" for that row instead of failing the whole report.}
+\pf{Error states}{None beyond the per-row "not available" case ---
+the report always renders.}
+\pf{Related pages}{Hours Trend, Labor Cost, Dashboard.}
+\pf{Source files}{\file{app/routes/dashboard.py},
+\file{templates/reports/overtime.html}}
+
+\section{Hours Trend Report}
+
+\pf{Purpose}{"Are working hours going up or down over time" for a
+department.}
+\pf{Route}{\route{GET /reports/hours-trend}}
+\pf{Access}{Admin, manager (their departments).}
+\pf{Main UI elements}{Department + date-range filter, a per-day bar
+comparison of total worked hours, cross-navigation to Overtime and
+Labor Cost.}
+\pf{Data displayed}{Total worked hours per day, summed across the
+department's employees.}
+\pf{User actions}{Filter; navigate to related reports.}
+\pf{Backend route}{\code{dashboard.hours\_trend\_report}}
+\pf{Service functions}{\code{reports.hours\_trend}}
+\pf{Database data involved}{\code{attendance\_entries}.}
+\pf{Authorization}{\code{role\_required("admin", "manager")}.}
+\pf{Validation}{Same 92-day clamp as the Overtime report; an
+\code{end < start} range shows an explicit "invalid date range" state.}
+\pf{Edge cases}{Bar width is computed server-side and mapped onto a
+small set of CSS width classes (never an inline \code{style}
+attribute, to respect the application's strict CSP --- see Chapter~6).}
+\pf{Error states}{None beyond the invalid-range state.}
+\pf{Related pages}{Overtime Report, Labor Cost, Dashboard.}
+\pf{Source files}{\file{app/routes/dashboard.py},
+\file{templates/reports/hours\_trend.html}}
+
+\section{Labor Cost --- Department Totals}
+
+\pf{Purpose}{Aggregate labor cost for a department/date range.}
+\pf{Route}{\route{GET /labor-cost}}
+\pf{Access}{Admin, manager (their departments).}
+\pf{Main UI elements}{Department + date-range filter, a total-cost
+card, an unconfigured-employee warning, cross-navigation to Hours
+Trend/Overtime, and (admin only) a per-employee drill-down list linking
+to individual breakdowns.}
+\pf{Data displayed}{A single aggregate Decimal total --- never a rate,
+never a per-employee figure, for a manager.}
+\pf{User actions}{Filter; (admin) drill into one employee's breakdown.}
+\pf{Backend route}{\code{labor\_cost.department\_totals}}
+\pf{Service functions}{\code{labor\_cost.department\_cost\_summary}}
+\pf{Database data involved}{\code{attendance\_entries},
+\code{employee\_pay\_rates}, \code{overtime\_policies}/\code{tiers}
+(internally).}
+\pf{Authorization}{\code{role\_required("admin", "manager")}; the
+per-employee drill-down section is computed and rendered only when
+\code{is\_admin} --- a manager never sees even the \emph{existence} of
+that link, not just its numbers.}
+\pf{Validation}{Same 92-day range clamp as the other reports;
+\code{end < start} raises a \code{ValidationError}, flashed rather than
+crashing.}
+\pf{Edge cases}{The per-employee drill-down list includes
+\emph{every} employment status (not only active), matching exactly the
+employee set the total above it was computed from --- otherwise the
+total and the list of links would silently disagree about who
+contributed to it.}
+\pf{Error states}{A flashed message on an invalid range; a
+"no cost total recorded" state when a valid department/range yields no
+data.}
+\pf{Related pages}{Overtime Report, Hours Trend, Labor Cost Employee
+Detail (admin only).}
+\pf{Source files}{\file{app/routes/labor\_cost.py},
+\file{templates/labor\_cost/index.html}}
+
+\section{Labor Cost --- Employee Breakdown}
+
+\pf{Purpose}{The one view in the system that shows an individual
+employee's hourly rate and exact cost, broken down by day and category.}
+\pf{Route}{\route{GET /labor-cost/employees/<id>}}
+\pf{Access}{Admin only --- structurally unreachable by a manager
+(hard-coded \code{role\_required("admin")}, not
+\code{role\_required("admin", "manager")} like almost every other
+manager-adjacent view).}
+\pf{Main UI elements}{Date-range filter, a line-item table (date,
+category, hours, rate, multiplier, cost), a total row.}
+\pf{Data displayed}{Every priced line item for the employee/range,
+including the hourly rate in force on each day.}
+\pf{User actions}{Filter by date range.}
+\pf{Backend route}{\code{labor\_cost.employee\_detail}}
+\pf{Service functions}{\code{labor\_cost.range\_cost\_for\_employee}}
+\pf{Database data involved}{\code{attendance\_entries},
+\code{employee\_pay\_rates}, \code{overtime\_policies}/\code{tiers}.}
+\pf{Authorization}{\code{role\_required("admin")}, plus an org-scoped
+404 lookup on the employee id (defense in depth, since the route is
+already admin-only).}
+\pf{Validation}{Same range clamp; a day with genuinely worked hours but
+no configured rate/policy raises a specific
+\code{ValidationError}, flashed rather than silently priced as zero.}
+\pf{Edge cases}{A mid-week rate change can legitimately produce two
+differently-priced weekly-overtime line items for the same tier
+(\S4.6).}
+\pf{Error states}{A flashed configuration-gap message; the table
+simply shows whatever line items \emph{did} resolve.}
+\pf{Related pages}{Employee Detail, Pay Rate, Labor Cost Department
+Totals.}
+\pf{Source files}{\file{app/routes/labor\_cost.py},
+\file{templates/labor\_cost/employee\_detail.html}}
+
+\section{Audit Log}
+
+\pf{Purpose}{A complete, permanent, admin-only record of privileged
+actions.}
+\pf{Route}{\route{GET /audit-log}}
+\pf{Access}{Admin only.}
+\pf{Main UI elements}{A date-range filter, a paginated table (when,
+action, entity, actor user id, IP address, details), Previous/Next
+links.}
+\pf{Data displayed}{Every audit entry in the selected window, 50 per
+page.}
+\pf{User actions}{Filter by date; page through results.}
+\pf{Backend route}{\code{audit.list\_entries}}
+\pf{Service functions}{\code{audit.list\_entries}}
+\pf{Database data involved}{\code{audit\_logs}.}
+\pf{Authorization}{\code{role\_required("admin")}, re-checked inside
+\code{audit.list\_entries} itself (this route historically queried the
+database directly; it now goes through the service like every other
+route --- see Chapter~1's "Round C fix" note).}
+\pf{Validation}{Page number is clamped to a minimum of 1; an invalid
+date string falls back to the default window rather than erroring.}
+\pf{Edge cases}{The actor's raw user id is shown, not a resolved email
+--- unlike the Recent Activity view below --- \VERIFY{} whether this
+asymmetry is intentional or an omission.}
+\pf{Error states}{An empty range shows a clear "no audit events in
+this range" state.}
+\pf{Related pages}{Recent Activity (a lighter view over the same
+data).}
+\pf{Source files}{\file{app/routes/audit.py},
+\file{app/services/audit.py}, \file{templates/audit/list.html}}
+
+\section{Recent Activity}
+
+\pf{Purpose}{A lighter, easier-to-read glance at the most recent
+privileged actions, for a quick check rather than a full
+investigation.}
+\pf{Route}{\route{GET /recent-activity}}
+\pf{Access}{Admin only.}
+\pf{Main UI elements}{A date-range filter, an activity list with each
+entry's actor email resolved, a link through to the full Audit Log.}
+\pf{Data displayed}{The same underlying audit events as the Audit Log,
+capped at \code{audit.DEFAULT\_PAGE\_SIZE} (50) with no pagination
+controls.}
+\pf{User actions}{Filter by date; follow through to the full log.}
+\pf{Backend route}{\code{audit.recent\_activity}}
+\pf{Service functions}{\code{reports.recent\_activity} (which itself
+calls \code{audit.list\_entries} and resolves actor emails in one
+batched query).}
+\pf{Database data involved}{\code{audit\_logs}, \code{users} (actor
+email resolution).}
+\pf{Authorization}{\code{role\_required("admin")}, re-checked inside
+\code{reports.recent\_activity} itself.}
+\pf{Validation}{Same date-parsing fallback as the Audit Log.}
+\pf{Edge cases}{An entry whose actor account no longer resolves (should
+not normally happen, since users are never hard-deleted) shows no
+email rather than erroring.}
+\pf{Error states}{Same "no events" empty state pattern as the Audit
+Log.}
+\pf{Related pages}{Audit Log.}
+\pf{Source files}{\file{app/routes/audit.py},
+\file{app/services/reports.py}, \file{templates/audit/recent\_activity.html}}
+
+\section{Error Pages}
+
+Five static error templates exist, one per handled HTTP status:
+\file{errors/400.html}, \file{403.html}, \file{404.html},
+\file{413.html} (payload too large --- reachable because
+\code{MAX\_CONTENT\_LENGTH} is set to 1\,MB), and \file{500.html}. None
+of them ever renders a stack trace, a SQL error, or any other internal
+detail --- \code{app.errors.handle\_internal\_server\_error} logs the
+real exception server-side and returns only a generic message. None
+require authorization of their own (a 404 is deliberately returned
+\emph{instead of} a 403 for an out-of-scope resource, per Chapter~2's
+IDOR defense, so these pages are reached by every role equally).
+
+\section{Admin Dashboard Deep Dive}
+
+The Admin Dashboard (\S5.2) is the most information-dense page in the
+application, so its data flow is documented separately here.
+
+\begin{center}
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[node distance=0.6cm]
+  \node[flownode, text width=3.4cm] (shifts) {Shift data};
+  \node[flownode, text width=3.4cm, below=of shifts] (att) {Attendance data};
+  \node[flownode, text width=3.4cm, below=of att] (leave) {Leave data};
+  \node[flownode, text width=3.4cm, below=of leave] (cost) {Labor cost data};
+
+  \node[flownode, text width=5.2cm, right=2.2cm of att] (svc) {\code{reports.*} / \code{labor\_cost.*}\\(dashboard service composition)};
+  \node[flownode, text width=5.2cm, below=1.0cm of svc] (route) {\code{dashboard.\_manager\_or\_admin\_dashboard}};
+  \node[flownode, text width=5.2cm, below=1.0cm of route] (tmpl) {\file{dashboard/admin.html} (Jinja)};
+
+  \draw[flowarrow] (shifts) -- (svc);
+  \draw[flowarrow] (att) -- (svc);
+  \draw[flowarrow] (leave) -- (svc);
+  \draw[flowarrow] (cost) -- (svc);
+  \draw[flowarrow] (svc) -- (route);
+  \draw[flowarrow] (route) -- (tmpl);
+\end{tikzpicture}%
+}
+\end{center}
+
+\textbf{Metrics.} Total employees, currently working, absent, on leave
+--- each a thin composition over an existing \code{reports.who\_is\_*}
+function, not a new query.
+
+\textbf{Workforce status / attendance.} \code{who\_is\_working\_today}
+and \code{who\_is\_absent\_today} together define "absent" as
+\emph{scheduled but with no attendance entry at all today, and not on
+approved leave} --- not "did not clock into the specific shift they
+were assigned," a distinction that matters for an employee with two
+shifts or an early clock-in outside the shift-matching grace window
+(documented in \code{reports.py}'s "Round B fix" comment).
+
+\textbf{Departments / coverage / labor cost.} Computed once per visible
+department via \code{scheduling.coverage\_summary} and
+\code{labor\_cost.department\_cost\_summary}.
+
+\textbf{Recent activity.} Available as its own page (\S5.15), reached
+from the sidebar, not embedded on the dashboard itself.
+
+\textbf{Filters.} An optional department filter narrows every section
+above simultaneously.
+
+\textbf{Admin-only vs.\ manager-safe information.} Everything on this
+page is manager-safe \emph{except} that a manager only ever sees their
+own managed departments' data (the query scoping, not a separate
+rendering path, is what enforces this --- there is no
+"admin-only widget" hidden from a manager on this particular page,
+unlike the Labor Cost and Pay Rate pages).

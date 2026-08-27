@@ -50,6 +50,21 @@ def _parse_date(value: str | None, fallback: date) -> date:
         return fallback
 
 
+# Widest date range the list view will query in one request, same bound
+# (and same reasoning: an arbitrary, user-editable ?start=/&end= query
+# string) as app.routes.dashboard's identical constant/helper. Without
+# this, an authenticated admin/manager could request the organization's
+# entire shift history in one request, instantiating a WTForms object
+# per returned shift (security-review finding).
+_MAX_LIST_RANGE_DAYS = 92
+
+
+def _clamp_range(start: date, end: date) -> tuple[date, date]:
+    if (end - start).days > _MAX_LIST_RANGE_DAYS:
+        start = end - timedelta(days=_MAX_LIST_RANGE_DAYS)
+    return start, end
+
+
 def _clean_optional(value):
     value = (value or "").strip()
     return value or None
@@ -88,23 +103,28 @@ def _local(value, tz):
     return value.astimezone(tz) if value is not None else None
 
 
-@schedule_bp.route("", methods=["GET"])
-@login_required
-def list_shifts():
-    scope = build_scope_for_user(current_user)
-    default_start, default_end = _default_date_range(scope)
-    start = _parse_date(request.args.get("start"), default_start)
-    end = _parse_date(request.args.get("end"), default_end)
-    department_id = request.args.get("department_id", type=int)
-
+def _shift_list_context(scope, start: date, end: date, department_id: int | None) -> dict:
+    """Everything the GET list view needs, minus ``create_form`` (the
+    caller builds that itself — either blank for a fresh GET, or the
+    already-validated, error-carrying instance on a failed POST, so its
+    field values and ``.errors`` survive the re-render). Shared so
+    ``create_shift``'s failure path can re-render the exact same page
+    the user was looking at instead of redirecting into a fresh GET that
+    silently drops both the entered values and the validation errors.
+    """
+    start, end = _clamp_range(start, end)
     shifts = scheduling_service.list_shifts(scope, start, end, department_id=department_id)
     departments = department_service.list_departments(scope)
     department_names = {d.id: d.name for d in departments}
+    department_choices_filter = sorted(
+        ((d.id, d.name) for d in departments), key=lambda pair: pair[1]
+    )
 
     can_manage = scope.role in ("admin", "manager")
     tz = scheduling_service.organization_timezone(scope)
     employee_names = {}
-    create_form = None
+    department_choices = []
+    employee_choices = []
     edit_forms = {}
     assign_forms = {}
 
@@ -113,10 +133,6 @@ def list_shifts():
         employee_names = {e.id: f"{e.first_name} {e.last_name}" for e in employees}
         department_choices = [(d.id, d.name) for d in departments]
         employee_choices = _employee_choices(employees)
-
-        create_form = ShiftCreateForm()
-        create_form.department_id.choices = department_choices
-        create_form.employee_id.choices = [(0, "Unassigned")] + employee_choices
 
         for shift in shifts:
             if shift.status == "draft":
@@ -135,19 +151,56 @@ def list_shifts():
                 assign_form.employee_id.choices = employee_choices
                 assign_forms[shift.id] = assign_form
 
-    return render_template(
-        "schedule/list.html",
-        shifts=shifts,
-        start=start,
-        end=end,
-        department_names=department_names,
-        employee_names=employee_names,
-        can_manage=can_manage,
-        create_form=create_form,
-        edit_forms=edit_forms,
-        assign_forms=assign_forms,
-        tz=scheduling_service.organization_timezone(scope),
-    )
+    shift_hours = {shift.id: scheduling_service.scheduled_hours(shift) for shift in shifts}
+
+    return {
+        "shifts": shifts,
+        "shift_hours": shift_hours,
+        "today": report_service.today_business_date(scope),
+        "start": start,
+        "end": end,
+        "department_names": department_names,
+        "department_choices": department_choices_filter,
+        "selected_department_id": department_id,
+        "employee_names": employee_names,
+        "can_manage": can_manage,
+        "edit_forms": edit_forms,
+        "assign_forms": assign_forms,
+        "tz": tz,
+        # Not rendered directly — handed back so callers can populate a
+        # create/edit form's SelectField choices without a second query.
+        "_department_choices_raw": department_choices,
+        "_employee_choices_raw": employee_choices,
+    }
+
+
+@schedule_bp.route("", methods=["GET"])
+@login_required
+def list_shifts():
+    scope = build_scope_for_user(current_user)
+    default_start, default_end = _default_date_range(scope)
+    start = _parse_date(request.args.get("start"), default_start)
+    end = _parse_date(request.args.get("end"), default_end)
+    department_id = request.args.get("department_id", type=int)
+
+    context = _shift_list_context(scope, start, end, department_id)
+    department_choices = context.pop("_department_choices_raw")
+    employee_choices = context.pop("_employee_choices_raw")
+
+    create_form = None
+    if context["can_manage"]:
+        create_form = ShiftCreateForm()
+        create_form.department_id.choices = department_choices
+        create_form.employee_id.choices = [(0, "Unassigned")] + employee_choices
+
+    # Employee gets its own composition of the exact same data (no
+    # separate query, no duplicated scheduling logic) — per
+    # MVP-1_version2.md §14: "employee scheduling answers 'when and
+    # where do I work', it should NOT look like the Admin scheduling
+    # interface."
+    template = "schedule/my_schedule.html" if scope.role == "employee" else "schedule/list.html"
+
+    return render_template(template, create_form=create_form, **context)
 
 
 @schedule_bp.route("", methods=["POST"])
@@ -178,7 +231,19 @@ def create_shift():
     else:
         flash("Please correct the errors and try again.", "error")
 
-    return redirect(url_for("schedule.list_shifts"))
+    # Re-render the list page with this exact form instance (its entered
+    # values and .errors intact) instead of redirecting into a fresh GET
+    # — see _shift_list_context's docstring. Same date range the user
+    # was viewing, so the failed attempt doesn't also reset their filter.
+    default_start, default_end = _default_date_range(scope)
+    start = _parse_date(request.args.get("start"), default_start)
+    end = _parse_date(request.args.get("end"), default_end)
+    department_id = request.args.get("department_id", type=int)
+    context = _shift_list_context(scope, start, end, department_id)
+    context.pop("_department_choices_raw")
+    context.pop("_employee_choices_raw")
+
+    return render_template("schedule/list.html", create_form=form, **context)
 
 
 @schedule_bp.route("/<int:shift_id>", methods=["POST"])

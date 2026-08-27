@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 
 from flask import Flask, jsonify
+from flask_login import current_user
 
 from app.config import CONFIG_BY_NAME
 from app.errors import register_error_handlers
-from app.extensions import csrf, db, login_manager, migrate
+from app.extensions import csrf, db, limiter, login_manager, migrate
 
 # Importing app.models registers every model with db.metadata, so Alembic
 # autogeneration and ORM usage can discover them regardless of which
@@ -50,6 +51,7 @@ def create_app(config_name=None):
     login_manager.login_message = "Please log in to access this page."
     login_manager.login_message_category = "error"
     csrf.init_app(app)
+    limiter.init_app(app)
 
     register_error_handlers(app)
 
@@ -98,6 +100,15 @@ def create_app(config_name=None):
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
             )
+        # Every authenticated page in this app can render pay rates,
+        # labor cost, or other employee PII (see the security-review
+        # requirement on Cache-Control for authenticated pages). Without
+        # this, a shared/kiosk workstation's browser back button (or its
+        # disk cache) can still show that page's last-rendered content
+        # after the user has logged out.
+        if current_user.is_authenticated:
+            response.headers.setdefault("Cache-Control", "no-store")
+            response.headers.setdefault("Pragma", "no-cache")
         return response
 
     from app.routes.attendance import attendance_bp

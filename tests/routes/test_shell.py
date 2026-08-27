@@ -83,7 +83,12 @@ def test_manager_sees_people_and_insight_but_not_admin(client, db_session):
     assert b"Audit Log" not in response.data
 
 
-def test_employee_sees_only_operations_and_dashboard(client, db_session):
+def test_employee_sees_the_dedicated_employee_portal_nav(client, db_session):
+    """The employee nav is its own small, flat vocabulary
+    (MVP-1_version2.md §8) — "Home"/"My Schedule"/"Time & Attendance"/
+    "My Hours"/"Leave"/"My Profile" — never the Admin/Manager group
+    labels or pages.
+    """
     org = make_organization(db_session)
     employee_record = make_employee(db_session, organization=org)
     employee = make_user(
@@ -98,9 +103,12 @@ def test_employee_sees_only_operations_and_dashboard(client, db_session):
     response = client.get("/dashboard")
 
     assert response.status_code == 200
-    for label in (b"Schedule", b"Attendance", b"Leave", b"Dashboard"):
+    for label in (b"Home", b"My Schedule", b"Time &amp; Attendance", b"My Hours", b"Leave", b"My Profile"):
         assert label in response.data
-    for label in (b"Employees", b"Departments", b"Overtime Report", b"Hours Trend", b"Labor Cost", b"Audit Log"):
+    for label in (
+        b"Employees", b"Departments", b"Overtime Report", b"Hours Trend",
+        b"Labor Cost", b"Audit Log", b"Recent Activity",
+    ):
         assert label not in response.data
 
 
@@ -128,3 +136,25 @@ def test_employee_detail_page_keeps_employees_nav_active(client, db_session):
 
     assert response.status_code == 200
     assert b'aria-current="page"' in response.data
+
+
+def test_admin_sees_recent_activity_nav_link(client, db_session):
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b'href="/recent-activity"' in response.data
+
+
+def test_manager_never_sees_recent_activity_nav_link(client, db_session):
+    org = make_organization(db_session)
+    manager = make_user(db_session, organization=org, role="manager", password=PASSWORD)
+    _login(client, manager)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b'href="/recent-activity"' not in response.data

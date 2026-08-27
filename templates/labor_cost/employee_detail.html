@@ -1,14 +1,22 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Labor cost — {{ employee.first_name }} {{ employee.last_name }} — Workforce Management Platform{% endblock %}
 
-{% block content %}
+{% block page_header %}
   {# Admin only (see app/routes/labor_cost.py): this is the one view in
      the whole application that renders an hourly rate and a per-employee
      cost breakdown — never reachable by a manager, per confirmed rule
      A4. #}
-  <h1>Labor cost — {{ employee.first_name }} {{ employee.last_name }}</h1>
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
+      <p class="text-muted">Labor cost breakdown</p>
+    </div>
+  </div>
+{% endblock %}
 
+{% block content %}
   <form method="get" class="filter-form">
     <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
     <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
@@ -16,37 +24,43 @@
   </form>
 
   {% if line_items %}
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Category</th>
-          <th>Hours</th>
-          <th>Rate</th>
-          <th>Multiplier</th>
-          <th>Cost</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in line_items %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
           <tr>
-            <td>{{ item.business_date }}</td>
-            <td>{{ item.category }}</td>
-            <td>{{ item.hours }}</td>
-            <td>{{ "%.4f"|format(item.rate) }}</td>
-            <td>{{ item.multiplier }}</td>
-            <td>{{ "%.2f"|format(item.cost) }}</td>
+            <th>Date</th>
+            <th>Category</th>
+            <th>Hours</th>
+            <th>Rate</th>
+            <th>Multiplier</th>
+            <th>Cost</th>
           </tr>
-        {% endfor %}
-      </tbody>
-      <tfoot>
-        <tr>
-          <td colspan="5">Total</td>
-          <td>{{ "%.2f"|format(total) }}</td>
-        </tr>
-      </tfoot>
-    </table>
+        </thead>
+        <tbody>
+          {% for item in line_items %}
+            <tr>
+              <td data-label="Date">{{ item.business_date }}</td>
+              <td data-label="Category">{{ item.category }}</td>
+              <td data-label="Hours">{{ item.hours }}</td>
+              <td data-label="Rate">{{ "%.4f"|format(item.rate) }}</td>
+              <td data-label="Multiplier">{{ item.multiplier }}</td>
+              <td data-label="Cost">{{ "%.2f"|format(item.cost) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5">Total</td>
+            <td data-label="Total">{{ "%.2f"|format(total) }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
   {% else %}
-    <p>No labor cost line items for this date range.</p>
+    <div class="state-card">
+      {{ icons.icon("coins") }}
+      <h4>No labor cost line items</h4>
+      <p>No labor cost line items for this date range.</p>
+    </div>
   {% endif %}
 {% endblock %}

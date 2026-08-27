@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Leave — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Leave</h1>
+      <p class="text-muted">Your own leave requests. Balances/accrual are not tracked in this system yet.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  {# No "Available" balance tile: this system has no leave-balance/
+     accrual ledger (LeaveType is a catalog only) — showing one here
+     would be fabricated data, which MVP-1_version2.md §17 explicitly
+     forbids ("never invent company leave policies... identify the gap
+     instead of creating fake behavior"). Pending/Approved are real,
+     derived from the caller's own already-fetched requests below. #}
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("calendar-off") }}</div>
+      <div class="m-label">Pending</div>
+      <div class="m-value">{{ requests | selectattr("status", "equalto", "pending") | list | length }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("check") }}</div>
+      <div class="m-label">Approved</div>
+      <div class="m-value">{{ requests | selectattr("status", "equalto", "approved") | list | length }}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("calendar-off") }} Request Leave</h2>
+    <form method="post" action="{{ url_for('leave.request_leave') }}" novalidate>
+      {{ request_form.hidden_tag() }}
+      <div class="form-field">
+        {{ request_form.leave_type_id.label }}
+        {{ request_form.leave_type_id() }}
+      </div>
+      <div class="form-field">
+        {{ request_form.starts_at.label }}
+        {{ request_form.starts_at() }}
+      </div>
+      <div class="form-field">
+        {{ request_form.ends_at.label }}
+        {{ request_form.ends_at() }}
+      </div>
+      <div class="form-field">
+        {{ request_form.reason.label }}
+        {{ request_form.reason() }}
+      </div>
+      <button type="submit" class="btn btn-primary">Submit request</button>
+    </form>
+  </div>
+
+  <div class="card summary-card">
+    <h2 class="card-title">{{ icons.icon("list") }} My Requests</h2>
+    {% if requests %}
+      <ul class="leave-item-list">
+        {% for leave_request in requests %}
+          <li class="leave-item">
+            <div class="leave-item-main">
+              <div class="leave-item-type">
+                {{ leave_type_names.get(leave_request.leave_type_id, "—") }}
+                {% if leave_timing.get(leave_request.id) == "current" %}
+                  <span class="leave-timing-tag current">· Happening now</span>
+                {% elif leave_timing.get(leave_request.id) == "upcoming" %}
+                  <span class="leave-timing-tag">· Upcoming</span>
+                {% endif %}
+              </div>
+              <div class="leave-item-dates text-muted">{{ leave_request.starts_at | local_dt(tz) }} – {{ leave_request.ends_at | local_dt(tz) }}</div>
+              {% if leave_request.reason %}<div class="leave-item-reason text-muted">{{ leave_request.reason }}</div>{% endif %}
+            </div>
+            <div class="leave-item-side">
+              {{ badges.status_badge(leave_request.status, {"pending": "warning", "approved": "success", "rejected": "danger", "cancelled": "neutral"}) }}
+              {% if leave_request.id in cancel_forms %}
+                <form method="post" action="{{ url_for('leave.cancel_leave', leave_request_id=leave_request.id) }}"
+                      data-confirm="Cancel this leave request?">
+                  {{ cancel_forms[leave_request.id].hidden_tag() }}
+                  <button type="submit" class="btn btn-secondary">Cancel</button>
+                </form>
+              {% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("calendar-off") }}
+        <h4>No leave requests</h4>
+        <p>You haven't submitted any leave requests yet.</p>
+      </div>
+    {% endif %}
+  </div>
+{% endblock %}

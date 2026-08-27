@@ -4,6 +4,7 @@ import pytest
 from werkzeug.exceptions import Forbidden, NotFound
 
 from app.auth.scope import AccessScope
+from app.services import departments as department_service
 from app.services import employees as employee_service
 from app.services.errors import ValidationError
 from tests.factories import make_department, make_employee, make_organization, make_user
@@ -152,9 +153,13 @@ def test_create_employee_rejects_an_unknown_field(db_session):
 def test_admin_creates_employee_scoped_to_their_own_organization(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
+    # A real user is required here (not the synthetic user_id=1 default):
+    # create_employee now writes an audit_logs row whose actor_user_id
+    # has a real FK to users.id.
+    admin = make_user(db_session, organization=org, role="admin")
 
     employee = employee_service.create_employee(
-        _scope("admin", org.id), **_required_fields(department.id)
+        _scope("admin", org.id, user_id=admin.id), **_required_fields(department.id)
     )
 
     assert employee.organization_id == org.id
@@ -224,6 +229,57 @@ def test_manager_cannot_reassign_employee_to_an_unmanaged_department(db_session)
         employee_service.update_employee(scope, employee.id, department_id=other_dept.id)
 
 
+def test_create_employee_rejects_a_deactivated_department(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    scope = _scope("admin", org.id, user_id=admin.id)
+    department_service.deactivate_department(scope, department.id)
+
+    with pytest.raises(ValidationError):
+        employee_service.create_employee(scope, **_required_fields(department.id))
+
+
+def test_update_employee_rejects_reassigning_into_a_deactivated_department(db_session):
+    org = make_organization(db_session)
+    active_department = make_department(db_session, organization=org)
+    inactive_department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    scope = _scope("admin", org.id, user_id=admin.id)
+    department_service.deactivate_department(scope, inactive_department.id)
+    employee = make_employee(db_session, organization=org, department=active_department)
+
+    with pytest.raises(ValidationError):
+        employee_service.update_employee(
+            scope, employee.id, department_id=inactive_department.id
+        )
+
+
+def test_update_employee_allows_unrelated_edits_while_in_a_deactivated_department(
+    db_session,
+):
+    """Deactivation must not retroactively block editing an employee
+    already there — only new placement into (or reassignment into) an
+    inactive department is rejected.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    scope = _scope("admin", org.id, user_id=admin.id)
+    department_service.deactivate_department(scope, department.id)
+
+    updated = employee_service.update_employee(
+        scope,
+        employee.id,
+        first_name="Changed",
+        department_id=department.id,
+    )
+
+    assert updated.first_name == "Changed"
+    assert updated.department_id == department.id
+
+
 def test_terminate_employee_sets_status_and_date_together(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
@@ -241,6 +297,20 @@ def test_terminate_employee_sets_status_and_date_together(db_session):
     assert str(terminated.terminated_on) == "2024-06-01"
 
 
+def test_terminate_employee_rejects_a_termination_date_before_hire_date(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(
+        db_session, organization=org, department=department, hired_on="2024-01-01"
+    )
+    admin = make_user(db_session, organization=org, role="admin")
+
+    with pytest.raises(ValidationError):
+        employee_service.terminate_employee(
+            _scope("admin", org.id, user_id=admin.id), employee.id, "2023-12-31"
+        )
+
+
 def test_terminate_employee_requires_admin_role(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
@@ -249,3 +319,34 @@ def test_terminate_employee_requires_admin_role(db_session):
 
     with pytest.raises(Forbidden):
         employee_service.terminate_employee(scope, employee.id, "2024-06-01")
+
+
+def test_terminate_employee_deactivates_the_linked_login(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    login = make_user(
+        db_session, organization=org, role="employee", employee_id=employee.id
+    )
+    assert login.is_active is True
+
+    employee_service.terminate_employee(
+        _scope("admin", org.id, user_id=admin.id), employee.id, "2024-06-01"
+    )
+
+    db_session.refresh(login)
+    assert login.is_active is False
+
+
+def test_terminate_employee_with_no_linked_login_still_succeeds(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    terminated = employee_service.terminate_employee(
+        _scope("admin", org.id, user_id=admin.id), employee.id, "2024-06-01"
+    )
+
+    assert terminated.employment_status == "terminated"

@@ -47,6 +47,19 @@ def _default_date_range(scope) -> tuple[date, date]:
     return today - timedelta(days=_DEFAULT_WINDOW_DAYS), today
 
 
+# Same bound as app.routes.dashboard's identical constant: these views
+# also run a per-employee, per-day cost computation, so an arbitrary
+# user-editable ?start=/&end= must not be allowed to multiply that
+# unboundedly.
+_MAX_REPORT_RANGE_DAYS = 92
+
+
+def _clamp_range(start: date, end: date) -> tuple[date, date]:
+    if (end - start).days > _MAX_REPORT_RANGE_DAYS:
+        start = end - timedelta(days=_MAX_REPORT_RANGE_DAYS)
+    return start, end
+
+
 def _parse_date(value: str | None, fallback: date) -> date:
     if not value:
         return fallback
@@ -63,11 +76,14 @@ def department_totals():
     default_start, default_end = _default_date_range(scope)
     start = _parse_date(request.args.get("start"), default_start)
     end = _parse_date(request.args.get("end"), default_end)
+    start, end = _clamp_range(start, end)
     department_id = request.args.get("department_id", type=int)
 
     departments = department_service.list_departments(scope)
     total = None
     unconfigured_employee_count = 0
+    is_admin = scope.role == "admin"
+    department_employees = []
 
     if department_id is not None:
         try:
@@ -79,6 +95,20 @@ def department_totals():
         except ValidationError as error:
             flash(error.message, "error")
 
+        # Per-employee drill-down links only — never a figure here. Admin
+        # only: rule A4 keeps even the *existence* of a per-employee cost
+        # view away from a manager, not just its numbers. Not filtered to
+        # active employees: department_cost_summary's total above prices
+        # every employment status, so a terminated employee who still
+        # contributed cost in this range must have a matching drill-down
+        # row, or the total and the breakdown silently disagree.
+        if is_admin:
+            department_employees = [
+                employee
+                for employee in employee_service.list_employees(scope)
+                if employee.department_id == department_id
+            ]
+
     return render_template(
         "labor_cost/index.html",
         departments=departments,
@@ -87,7 +117,8 @@ def department_totals():
         end=end,
         total=total,
         unconfigured_employee_count=unconfigured_employee_count,
-        is_admin=scope.role == "admin",
+        is_admin=is_admin,
+        department_employees=department_employees,
     )
 
 
@@ -103,6 +134,7 @@ def employee_detail(employee_id):
     default_start, default_end = _default_date_range(scope)
     start = _parse_date(request.args.get("start"), default_start)
     end = _parse_date(request.args.get("end"), default_end)
+    start, end = _clamp_range(start, end)
 
     line_items = []
     try:

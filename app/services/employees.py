@@ -6,14 +6,17 @@ checked (see ``update_employee`` in particular: read-scope and
 write-authorization are checked separately on purpose).
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from flask import abort
+from sqlalchemy.exc import IntegrityError
 
+from app.auth.passwords import hash_password
 from app.auth.scope import AccessScope, get_scoped_or_404
 from app.extensions import db
 from app.models.department import Department
 from app.models.employee import Employee
+from app.models.user import User
 from app.services import audit as audit_service
 from app.services.errors import ValidationError
 
@@ -44,12 +47,23 @@ _UPDATABLE_FIELDS = {
 }
 
 
-def _validate_department(scope: AccessScope, department_id: int) -> None:
+def _validate_department(
+    scope: AccessScope, department_id: int, require_active: bool = False
+) -> None:
     """Confirm ``department_id`` exists in the caller's organization.
 
     Defense in depth beyond the DB's composite FK: this turns a
     cross-organization department id into a clean ``ValidationError``
     instead of a raw ``IntegrityError`` bubbling out of a commit.
+
+    ``require_active`` additionally rejects a deactivated department —
+    used only when an employee is newly being placed there (creation, or
+    a genuine reassignment away from their current department in
+    ``update_employee``), never for an unrelated edit that happens to
+    resubmit an employee's *existing*, already-inactive department
+    unchanged. Deactivation is meant to retire a department going
+    forward while leaving its existing history (and the employees
+    already in it) untouched, not to block every future edit to them.
     """
     department = (
         db.session.query(Department)
@@ -59,7 +73,7 @@ def _validate_department(scope: AccessScope, department_id: int) -> None:
         )
         .first()
     )
-    if department is None:
+    if department is None or (require_active and not department.is_active):
         raise ValidationError(
             "Selected department does not exist in this organization.",
             field="department_id",
@@ -103,6 +117,137 @@ def get_employee(scope: AccessScope, employee_id: int) -> Employee:
     return get_scoped_or_404(Employee, employee_id, scope)
 
 
+def get_linked_user(scope: AccessScope, employee_id: int) -> User | None:
+    """The login account linked to this employee, if any (``users.
+    employee_id`` is unique, so at most one). Callable only after
+    ``get_employee`` has already confirmed ``employee_id`` is visible to
+    ``scope`` — this does no scoping of its own beyond the organization
+    match, same "caller already resolved the parent record" precedent as
+    ``pay_rates.list_pay_rate_history``.
+
+    An employee with no linked account (e.g. added to the roster before
+    their login was created) is a normal, expected state, not an error.
+    """
+    return (
+        db.session.query(User)
+        .filter(User.organization_id == scope.organization_id, User.employee_id == employee_id)
+        .first()
+    )
+
+
+def create_employee_account(
+    scope: AccessScope, employee_id: int, email: str, password: str
+) -> User:
+    """Create the login account for an existing employee. Admin only.
+
+    There is no self-service sign-up route anywhere in this codebase —
+    the confirmed workflow is "admin/manager creates the Employee record,
+    then the employee logs in" (see MVP-1_version2.md's Account and
+    Employee Model section), but until this function existed there was
+    no way to actually create the ``User`` row that step depends on.
+    Reuses the existing ``User`` model, its role/organization
+    constraints, and the existing Argon2 hashing — this is not a second
+    authentication system, just the missing write path for the first
+    one.
+
+    Always creates an ``employee``-role account linked to
+    ``employee_id`` — this function is not a general "create any user"
+    tool (admin/manager account provisioning is a separate, unaddressed
+    concern outside this workflow).
+    """
+    if scope.role != "admin":
+        abort(403)
+
+    employee = get_employee(scope, employee_id)
+
+    existing = (
+        db.session.query(User).filter(User.employee_id == employee.id).first()
+    )
+    if existing is not None:
+        raise ValidationError("This employee already has a login account.")
+
+    user = User(
+        organization_id=scope.organization_id,
+        employee_id=employee.id,
+        email=email,
+        password_hash=hash_password(password),
+        role="employee",
+        is_active=True,
+    )
+    db.session.add(user)
+    try:
+        db.session.flush()
+    except IntegrityError as error:
+        db.session.rollback()
+        raise ValidationError(
+            "This email address is already in use.", field="email"
+        ) from error
+
+    # changes excludes the password entirely (see app.services.audit's
+    # module docstring: never a raw dump of a sensitive value).
+    audit_service.record(
+        "employee_account_created",
+        "user",
+        entity_id=user.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": employee.id},
+    )
+    # One commit covers both the account creation and the audit entry
+    # above — see app.services.audit's module docstring.
+    db.session.commit()
+    return user
+
+
+def reset_employee_account_password(
+    scope: AccessScope, employee_id: int, new_password: str
+) -> User:
+    """Admin-only: reset an existing login account's password directly.
+
+    The practical answer to "the employee forgot their password" in
+    this application: there is no email-sending capability anywhere in
+    the codebase, so a self-service "email me a reset link" flow isn't
+    a real option without adding that infrastructure first. An admin
+    setting a new password directly — the employee then signs in with
+    it and may change it themselves via ``auth.service.change_password``
+    — needs no new infrastructure and reuses the same trust model
+    already established by ``create_employee_account``.
+
+    Also clears any lockout, so this doubles as the recovery path for
+    an account locked out by repeated failed attempts, not only a
+    forgotten password.
+    """
+    if scope.role != "admin":
+        abort(403)
+
+    employee = get_employee(scope, employee_id)
+    user = (
+        db.session.query(User).filter(User.employee_id == employee.id).first()
+    )
+    if user is None:
+        raise ValidationError("This employee has no login account to reset.")
+
+    user.password_hash = hash_password(new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
+    user.failed_login_count = 0
+    user.locked_until = None
+
+    # changes excludes the password entirely (see app.services.audit's
+    # module docstring: never a raw dump of a sensitive value).
+    audit_service.record(
+        "employee_account_password_reset",
+        "user",
+        entity_id=user.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": employee.id},
+    )
+    # One commit covers both the reset and the audit entry above — see
+    # app.services.audit's module docstring.
+    db.session.commit()
+    return user
+
+
 def create_employee(scope: AccessScope, **fields) -> Employee:
     """Create an employee in the caller's organization. Admin only."""
     if scope.role != "admin":
@@ -118,10 +263,21 @@ def create_employee(scope: AccessScope, **fields) -> Employee:
             f"Missing required field(s): {', '.join(sorted(missing_fields))}"
         )
 
-    _validate_department(scope, fields["department_id"])
+    _validate_department(scope, fields["department_id"], require_active=True)
 
     employee = Employee(organization_id=scope.organization_id, **fields)
     db.session.add(employee)
+    db.session.flush()
+    audit_service.record(
+        "employee_created",
+        "employee",
+        entity_id=employee.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": employee.id, "department_id": employee.department_id},
+    )
+    # One commit covers both the creation and the audit entry above —
+    # see app.services.audit's module docstring.
     db.session.commit()
     return employee
 
@@ -155,7 +311,10 @@ def update_employee(scope: AccessScope, employee_id: int, **fields) -> Employee:
 
     if "department_id" in fields:
         target_department_id = fields["department_id"]
-        _validate_department(scope, target_department_id)
+        is_reassignment = target_department_id != employee.department_id
+        _validate_department(
+            scope, target_department_id, require_active=is_reassignment
+        )
         if (
             scope.role == "manager"
             and target_department_id not in scope.department_ids
@@ -187,6 +346,37 @@ def update_employee(scope: AccessScope, employee_id: int, **fields) -> Employee:
     return employee
 
 
+def update_own_contact_info(scope: AccessScope, phone: str | None) -> Employee:
+    """Self-service: an employee updates their own phone number.
+
+    The only field an employee may change about their own Employee
+    record — every company-controlled field (department, employment
+    status, hired_on, ...) stays reachable only through
+    ``update_employee`` (admin/manager). Not routed through
+    ``update_employee`` itself: that function's authorization is
+    "admin, or manager within scope," which would let a manager reach
+    this by accident; self-service needs its own, separate check.
+    """
+    if scope.role != "employee" or scope.employee_id is None:
+        abort(403)
+
+    employee = get_scoped_or_404(Employee, scope.employee_id, scope)
+    employee.phone = phone
+
+    audit_service.record(
+        "employee_contact_info_updated",
+        "employee",
+        entity_id=employee.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": employee.id, "fields_changed": ["phone"]},
+    )
+    # One commit covers both the update and the audit entry above — see
+    # app.services.audit's module docstring.
+    db.session.commit()
+    return employee
+
+
 def terminate_employee(scope: AccessScope, employee_id: int, terminated_on: date) -> Employee:
     """Terminate an employee. Admin only.
 
@@ -194,13 +384,43 @@ def terminate_employee(scope: AccessScope, employee_id: int, terminated_on: date
     update so the DB's
     ``(employment_status = 'terminated') = (terminated_on IS NOT NULL)``
     CHECK constraint is always satisfied by the resulting row.
+
+    Also deactivates the employee's linked login account (``User.
+    is_active = False``), if one exists. Termination has no reverse path
+    through this application (``update_employee`` refuses to move
+    ``employment_status`` away from ``'terminated'`` — the DB's paired
+    CHECK constraint above would reject it without also clearing
+    ``terminated_on``, which is not an updatable field), so this is a
+    one-way access revocation, not a suspension. ``load_user`` already
+    treats ``is_active = False`` as "sign this session out on its very
+    next request" (see that function's docstring), so a terminated
+    employee's existing session stops working immediately, not just at
+    their next login attempt.
     """
     if scope.role != "admin":
         abort(403)
 
     employee = get_scoped_or_404(Employee, employee_id, scope)
+
+    # Compared as ISO-format strings, not date objects: see this
+    # function's audit_service.record call below for why terminated_on
+    # itself is not reliably a date object here (at least one existing
+    # caller passes a plain ISO string through unchanged), and str() of
+    # a date object is that same ISO format either way.
+    if str(terminated_on) < str(employee.hired_on):
+        raise ValidationError(
+            "Termination date cannot be before the hire date.",
+            field="terminated_on",
+        )
+
     employee.employment_status = "terminated"
     employee.terminated_on = terminated_on
+
+    linked_user = (
+        db.session.query(User).filter(User.employee_id == employee.id).first()
+    )
+    if linked_user is not None:
+        linked_user.is_active = False
 
     # str(), not .isoformat(): terminated_on is typed as date, but at
     # least one existing caller passes a plain ISO string through

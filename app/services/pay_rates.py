@@ -12,7 +12,7 @@ so the cost of an already-worked historical period is never silently
 recomputed just because the current rate changed.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from flask import abort
@@ -169,6 +169,51 @@ def resolve_pay_rate(
         .one_or_none()
     )
     return pay_rate.hourly_rate if pay_rate is not None else None
+
+
+def resolve_pay_rates_by_range(
+    employee_id: int, organization_id: int, start_date: date, end_date: date
+) -> dict[date, Decimal]:
+    """The hourly rate in force on each date in ``[start_date, end_date]``
+    that has one configured — a missing key means "unconfigured", same as
+    ``resolve_pay_rate`` returning ``None`` for that date.
+
+    One query for the whole range instead of ``resolve_pay_rate`` called
+    once per day — see ``working_hours.worked_seconds_by_range``'s
+    docstring for the N+1 problem this (and its two siblings) fixes.
+    Rate periods never overlap (the DB's own exclusion constraint), so at
+    most one fetched row can match any given date; the per-date match is
+    a cheap in-memory scan over what is typically a handful of rows, not
+    a second query.
+    """
+    rows = (
+        db.session.query(EmployeePayRate)
+        .filter(
+            EmployeePayRate.employee_id == employee_id,
+            EmployeePayRate.organization_id == organization_id,
+            EmployeePayRate.effective_from <= end_date,
+            or_(
+                EmployeePayRate.effective_to.is_(None),
+                EmployeePayRate.effective_to >= start_date,
+            ),
+        )
+        .all()
+    )
+    if not rows:
+        return {}
+
+    rate_by_date: dict[date, Decimal] = {}
+    business_date = start_date
+    one_day = timedelta(days=1)
+    while business_date <= end_date:
+        for row in rows:
+            if row.effective_from <= business_date and (
+                row.effective_to is None or row.effective_to >= business_date
+            ):
+                rate_by_date[business_date] = row.hourly_rate
+                break
+        business_date += one_day
+    return rate_by_date
 
 
 def list_pay_rate_history(scope: AccessScope, employee_id: int) -> list[EmployeePayRate]:

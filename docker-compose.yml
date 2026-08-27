@@ -8,6 +8,25 @@ services:
     depends_on:
       - postgres
 
+  # QA finding: an employee who forgets to clock out has no way to
+  # resolve it themselves after 24h (the DB's own duration cap rejects a
+  # plain clock-out), and the only escape hatch — `flask attendance
+  # flag-stale`, which flags the entry `needs_review` for a manager to
+  # correct — was never scheduled anywhere, so it never actually ran in
+  # a real deployment. Reuses the same image as `app`; no new
+  # dependency. Adjust the sleep interval / --cutoff-hours to taste.
+  attendance-scheduler:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    command: >
+      sh -c "while true; do
+        flask attendance flag-stale || true;
+        sleep 3600;
+      done"
+
   postgres:
     image: postgres:18
     environment:

@@ -1,73 +1,219 @@
 {% extends "base.html" %}
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
 
-{% block title %}Dashboard — Workforce Management Platform{% endblock %}
+{% block title %}Home — Workforce Management Platform{% endblock %}
 
 {% block content %}
-  <h1>My dashboard</h1>
-
   {# Deliberately personal-only: an employee's dashboard never shows
      organization-wide or another employee's data — only what
-     scheduling/working_hours/leave already scope to their own
-     employee_id. #}
-  <h2>My upcoming shifts</h2>
-  {% if upcoming_shifts %}
-    <table>
-      <thead>
-        <tr><th>Date</th><th>Starts</th><th>Ends</th></tr>
-      </thead>
-      <tbody>
-        {% for shift in upcoming_shifts %}
-          <tr>
-            <td>{{ shift.business_date }}</td>
-            <td>{{ shift.starts_at | local_dt(tz) }}</td>
-            <td>{{ shift.ends_at | local_dt(tz) }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No upcoming shifts.</p>
+     scheduling/working_hours/leave/attendance already scope to their
+     own employee_id.
+
+     Deliberately its own composition, not the Admin/Manager dashboard
+     restyled — same design tokens and components, a calmer, more
+     personal layout (MVP-1_version2.md §23: "shared design system...
+     not necessarily the same layout"). No .page-header/.metric-grid
+     here: a personal greeting hero replaces the generic page title,
+     and metrics use plain cards instead of the dashed-grid signature
+     reserved for the Admin Dashboard. #}
+  <div class="employee-hero">
+    <h1>{{ greeting }}{{ ", " + first_name if first_name else "" }}</h1>
+    <p class="text-muted">{{ upcoming_shifts|length }} upcoming shift{{ "s" if upcoming_shifts|length != 1 else "" }} in the next 14 days.</p>
+  </div>
+
+  {# The single most important thing on this page (ui-ux.md §18: "the
+     primary action must be unmistakable, do not bury check-in/check-out
+     inside menus") — full width, first, above even the headline
+     metrics. Submitting either form posts to the existing, unchanged
+     attendance.clock_in/clock_out routes; this is a second, more
+     prominent entry point to that functionality, not new behavior.
+
+     Three states, not two: a "needs_review" entry (flagged stale by
+     attendance.flag_stale_open_entries) blocks both clock-in (the DB's
+     open-entry uniqueness constraint) and a plain clock-out
+     (attendance.clock_out rejects it — only an admin/manager correction
+     resolves one) — see app/routes/dashboard.py. Showing either button
+     in that state would be a dead end, so it gets its own warning-toned
+     state with no button at all, same visual language as the admin
+     dashboard's "Requiring Attention" card.
+
+     Today's shift is shown in every state below (not only "Not Clocked
+     In") so the employee can always answer "when do I work today"
+     without the answer disappearing the moment they clock in — see
+     MVP-1_version2.md's Employee Home information hierarchy (today's
+     shift is priority 3, right after check-in/out). #}
+  {% set todays_shift_line %}
+    {% if todays_shifts %}
+      Today's shift: {{ todays_shifts[0].starts_at | local_dt(tz) }} – {{ todays_shifts[0].ends_at | local_dt(tz) }}
+    {% else %}
+      No shift scheduled today.
+    {% endif %}
+  {% endset %}
+
+  {% if clock_out_form %}
+    <div class="card summary-card status-card status-card--working status-card--hero">
+      <div class="status-card-body">
+        <div class="status-card-icon">{{ icons.icon("check-circle") }}</div>
+        <div>
+          <p class="status-card-label">Currently Working</p>
+          <p class="status-card-detail">Checked in at {{ attendance_status.entry.started_at | local_dt(tz) }}</p>
+          <p class="status-card-elapsed">
+            {{ attendance_status.elapsed_hours }}h {{ "%02d"|format(attendance_status.elapsed_minutes) }}m<span class="unit">elapsed</span>
+          </p>
+          <p class="status-card-detail text-muted">{{ todays_shift_line }}</p>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('attendance.clock_out', entry_id=attendance_status.entry.id) }}" novalidate>
+        {{ clock_out_form.hidden_tag() }}
+        <button type="submit" class="btn btn-danger btn-lg">Clock Out</button>
+      </form>
+    </div>
+  {% elif attendance_status %}
+    <div class="card summary-card status-card card--attention status-card--hero">
+      <div class="status-card-body">
+        <div class="status-card-icon">{{ icons.icon("alert-triangle") }}</div>
+        <div>
+          <p class="status-card-label">Attendance Needs Review</p>
+          <p class="status-card-detail">
+            Your clock-in at {{ attendance_status.entry.started_at | local_dt(tz) }} was flagged for review.
+            An admin or manager needs to correct it before you can clock in or out again.
+          </p>
+          <p class="status-card-detail text-muted">{{ todays_shift_line }}</p>
+        </div>
+      </div>
+      <a class="btn btn-secondary" href="{{ url_for('attendance.list_entries') }}">View in Attendance</a>
+    </div>
+  {% elif clock_in_form %}
+    <div class="card summary-card status-card status-card--hero">
+      <div class="status-card-body">
+        <div class="status-card-icon">{{ icons.icon("clock") }}</div>
+        <div>
+          <p class="status-card-label">Not Clocked In</p>
+          <p class="status-card-detail">{{ todays_shift_line }}</p>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('attendance.clock_in') }}" novalidate>
+        {{ clock_in_form.hidden_tag() }}
+        <button type="submit" class="btn btn-primary btn-lg">Clock In</button>
+      </form>
+    </div>
   {% endif %}
 
-  <h2>My recent hours</h2>
-  {% if recent_hours %}
-    <table>
-      <thead>
-        <tr><th>Date</th><th>Scheduled</th><th>Worked</th><th>Difference</th></tr>
-      </thead>
-      <tbody>
-        {% for day in recent_hours %}
-          <tr>
-            <td>{{ day.date }}</td>
-            <td>{{ "%.2f"|format(day.scheduled_hours) }}</td>
-            <td>{{ "%.2f"|format(day.worked_hours) }}</td>
-            <td>{{ "%.2f"|format(day.difference_hours) }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No recent hours to show.</p>
-  {% endif %}
+  <div class="stat-row">
+    <div class="stat-card">
+      {# recent_hours[-1] is today (the loop in _employee_dashboard
+         builds it oldest-to-newest, offset 6..0) — reused as-is rather
+         than a second query, since it already carries exactly this
+         day's scheduled/worked figures. #}
+      <div class="m-icon">{{ icons.icon("clock") }}</div>
+      <div class="m-label">Worked Today</div>
+      <div class="m-value">
+        {{ "%.2f"|format(recent_hours[-1].worked_hours) if recent_hours else "0.00" }}<span class="text-muted">&nbsp;/&nbsp;{{ "%.2f"|format(recent_hours[-1].scheduled_hours) if recent_hours else "0.00" }}h</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("calendar") }}</div>
+      <div class="m-label">Upcoming Shifts</div>
+      <div class="m-value">{{ upcoming_shifts|length }}</div>
+    </div>
+    <div class="stat-card">
+      {# recent_hours is a rolling trailing-7-days window (see
+         _employee_dashboard in app/routes/dashboard.py), not a calendar
+         week — labeling it "This Week" would misread as progress toward
+         a weekly overtime threshold, which uses a real week boundary
+         this figure doesn't. #}
+      <div class="m-icon">{{ icons.icon("clock") }}</div>
+      <div class="m-label">Hours (Last 7 Days)</div>
+      <div class="m-value">{{ "%.2f"|format(recent_hours | sum(attribute="worked_hours")) }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="m-icon">{{ icons.icon("calendar-off") }}</div>
+      <div class="m-label">Pending Leave</div>
+      <div class="m-value">{{ leave_requests | selectattr("status", "equalto", "pending") | list | length }}</div>
+    </div>
+  </div>
 
-  <h2>My leave requests</h2>
-  {% if leave_requests %}
-    <table>
-      <thead>
-        <tr><th>Type</th><th>From</th><th>To</th><th>Status</th></tr>
-      </thead>
-      <tbody>
-        {% for leave_request in leave_requests %}
-          <tr>
-            <td>{{ leave_type_names.get(leave_request.leave_type_id, "—") }}</td>
-            <td>{{ leave_request.starts_at | local_dt(tz) }}</td>
-            <td>{{ leave_request.ends_at | local_dt(tz) }}</td>
-            <td>{{ leave_request.status }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No leave requests.</p>
-  {% endif %}
+  <div class="dashboard-grid">
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("calendar") }} Upcoming Shifts</h3>
+      {% if upcoming_shifts %}
+        <ul class="shift-list">
+          {% for shift in upcoming_shifts %}
+            <li class="shift-item">
+              <div class="shift-item-date">
+                <span class="weekday">{{ shift.business_date.strftime("%a") }}</span>
+                {{ shift.business_date.strftime("%b %-d") }}
+              </div>
+              <div class="shift-item-time">{{ shift.starts_at | local_dt(tz) }} – {{ shift.ends_at | local_dt(tz) }}</div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("calendar") }}
+          <h4>No upcoming shifts</h4>
+          <p>You have no shifts scheduled in the next 14 days.</p>
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("clock") }} Recent Hours</h3>
+      {% if recent_hours %}
+        <div class="table-wrap table-cards-mobile">
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Scheduled</th><th>Worked</th><th>Difference</th></tr>
+            </thead>
+            <tbody>
+              {% for day in recent_hours %}
+                <tr>
+                  <td data-label="Date">{{ day.date }}</td>
+                  <td data-label="Scheduled">{{ "%.2f"|format(day.scheduled_hours) }}</td>
+                  <td data-label="Worked">{{ "%.2f"|format(day.worked_hours) }}</td>
+                  <td data-label="Difference">{{ "%.2f"|format(day.difference_hours) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("clock") }}
+          <h4>No recent hours</h4>
+          <p>No scheduled or worked hours were recorded for you in the last 7 days.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card summary-card">
+    <h2 class="card-title">{{ icons.icon("calendar-off") }} My Leave Requests</h2>
+    {% if leave_requests %}
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Type</th><th>From</th><th>To</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {% for leave_request in leave_requests %}
+              <tr>
+                <td data-label="Type">{{ leave_type_names.get(leave_request.leave_type_id, "—") }}</td>
+                <td data-label="From">{{ leave_request.starts_at | local_dt(tz) }}</td>
+                <td data-label="To">{{ leave_request.ends_at | local_dt(tz) }}</td>
+                <td data-label="Status">{{ badges.status_badge(leave_request.status, {"pending": "warning", "approved": "success", "rejected": "danger", "cancelled": "neutral"}) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("calendar-off") }}
+        <h4>No leave requests</h4>
+        <p>You haven't submitted any leave requests yet.</p>
+      </div>
+    {% endif %}
+  </div>
 {% endblock %}

@@ -55,9 +55,13 @@ def test_create_department_requires_admin_role(db_session):
 
 def test_admin_creates_department_scoped_to_their_own_organization(db_session):
     org = make_organization(db_session)
+    # A real user is required here (not the synthetic user_id=1 default):
+    # create_department now writes an audit_logs row whose actor_user_id
+    # has a real FK to users.id.
+    admin = make_user(db_session, organization=org, role="admin")
 
     department = department_service.create_department(
-        _scope("admin", org.id), name="Ops", code="OPS"
+        _scope("admin", org.id, user_id=admin.id), name="Ops", code="OPS"
     )
 
     assert department.organization_id == org.id
@@ -76,9 +80,13 @@ def test_update_department_rejects_an_unknown_field(db_session):
 def test_update_department_applies_allowed_fields(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
+    # A real user is required here (not the synthetic user_id=1 default):
+    # update_department now writes an audit_logs row whose actor_user_id
+    # has a real FK to users.id.
+    admin = make_user(db_session, organization=org, role="admin")
 
     updated = department_service.update_department(
-        _scope("admin", org.id), department.id, name="Renamed"
+        _scope("admin", org.id, user_id=admin.id), department.id, name="Renamed"
     )
 
     assert updated.name == "Renamed"

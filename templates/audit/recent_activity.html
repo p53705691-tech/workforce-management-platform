@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Recent Activity — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Recent Activity</h1>
+      <p class="text-muted">
+        A quick, readable glance at recent privileged actions. For the complete,
+        exhaustive record, see the <a href="{{ url_for('audit.list_entries') }}">audit log</a>.
+      </p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <form method="get" class="date-range-form">
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if activity %}
+    <div class="card">
+      <ul class="activity-list">
+        {% for item in activity %}
+          <li class="activity-item">
+            {{ icons.icon("activity") }}
+            <div>
+              <div class="activity-item-text">
+                {{ item.entry.action|replace("_", " ")|title }}
+                {%- if item.entry.entity_type %} — {{ item.entry.entity_type }}{% if item.entry.entity_id %} #{{ item.entry.entity_id }}{% endif %}{% endif %}
+              </div>
+              <div class="activity-item-meta">
+                {{ item.actor_email or "System" }} · {{ item.entry.created_at | local_dt(tz) }}
+              </div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("activity") }}
+      <h4>No recent activity</h4>
+      <p>Nothing was logged between {{ start.isoformat() }} and {{ end.isoformat() }}.</p>
+    </div>
+  {% endif %}
+{% endblock %}

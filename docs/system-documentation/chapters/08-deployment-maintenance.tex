@@ -1,0 +1,202 @@
+\chapter{Deployment, Maintenance, Limitations, and Roadmap}
+
+\section{Deployment Architecture}
+
+The actual deployment configuration in the repository
+(\file{docker-compose.yml}, \file{Dockerfile}) defines exactly two
+containers:
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.7cm]
+  \node[flownode] (browser) {Client (browser)};
+  \node[flownode, below=of browser] (gunicorn) {\code{app} container: Gunicorn (\code{-b 0.0.0.0:8000}) running \code{wsgi:app}, port 8000 published};
+  \node[flownode, below=of gunicorn] (flask) {Flask application (this codebase)};
+  \node[flownode, below=of flask] (pg) {\code{postgres} container: PostgreSQL 18, port 5432 published, data on a named volume (\code{postgres\_data})};
+
+  \foreach \a/\b in {browser/gunicorn,gunicorn/flask,flask/pg}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\textbf{No reverse proxy is present in this configuration.} Gunicorn's
+port is published directly to the host. \file{CLAUDE.md}'s technology
+stack section names "Nginx when appropriate" as conditional guidance,
+not a committed deployment component --- the current
+\file{docker-compose.yml} does not include an Nginx (or any other
+reverse-proxy) service, so TLS termination, request buffering, and
+static-file serving in front of Gunicorn are all currently \PLANNED{}
+rather than configured. A real production deployment would need one of
+these added in front of the \code{app} service.
+
+The Docker image itself (\file{Dockerfile}) is a straightforward
+\code{python:3.14-slim} base: dependencies installed from
+\file{requirements.txt}, the application copied in, and the process run
+as a dedicated non-root \code{app} user (\code{groupadd --system app;
+useradd --system ...}) --- not root, a real hardening detail worth
+noting explicitly.
+
+\section{Configuration}
+
+Every configuration value is read from the environment
+(\file{app/config.py}), never hardcoded. The variables below are from
+\file{.env.example} (values redacted where they would normally be real
+secrets):
+
+\begin{lstlisting}[frame=single]
+FLASK_APP=wsgi:app
+FLASK_ENV=development        # development | testing | production
+SECRET_KEY=<REDACTED>
+DATABASE_URL=<REDACTED>      # postgresql+psycopg://user:pass@host:5432/db
+TEST_DATABASE_URL=<REDACTED>
+\end{lstlisting}
+
+\code{docker-compose.yml} additionally expects \code{POSTGRES\_USER},
+\code{POSTGRES\_PASSWORD}, and \code{POSTGRES\_DB} for the
+\code{postgres} service, sourced from the same \code{.env} file
+(\code{env\_file: .env} on the \code{app} service; the \code{postgres}
+service reads the same three variables directly from the shell
+environment when Compose is invoked).
+
+\code{ProductionConfig} fails fast (\code{RuntimeError} at
+instantiation) if \code{SECRET\_KEY} or \code{DATABASE\_URL} is unset
+--- the application cannot silently boot into an insecure default in
+that environment. \code{FLASK\_ENV} \textbf{must} be set to
+\code{production} before any non-local deployment; an unset value
+defaults to \code{development} (\code{DEBUG=True}, non-secure cookies,
+no HSTS), which is appropriate for local development only.
+
+\section{How to Add a New Feature}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.4cm]
+  \node[flownode, text width=8cm] (req) {Requirement (a real, explicit business need --- never invented)};
+  \node[flownode, text width=8cm, below=of req] (rule) {State the business rule explicitly; if ambiguous, say so rather than guessing (\file{CLAUDE.md}'s Source of Truth policy)};
+  \node[flownode, text width=8cm, below=of rule] (model) {Database / Model: a migration first, if the schema changes at all};
+  \node[flownode, text width=8cm, below=of model] (svc) {Service: the business logic, taking an \code{AccessScope} and re-checking authorization itself};
+  \node[flownode, text width=8cm, below=of svc] (route) {Route: thin --- parse the form, call the service, flash/redirect/render};
+  \node[flownode, text width=8cm, below=of route] (tmpl) {Template: extend \code{base.html}, reuse existing components};
+  \node[flownode, text width=8cm, below=of tmpl] (test) {Tests: unit for pure logic, integration for DB behavior, route for the HTTP flow, plus an IDOR-style negative test if a new scope filter was added};
+  \node[flownode, text width=8cm, below=of test] (sec) {Security review for anything touching authorization, money, or attendance};
+
+  \foreach \a/\b in {req/rule,rule/model,model/svc,svc/route,route/tmpl,tmpl/test,test/sec}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\textbf{What should \emph{not} be done:} a route querying the database
+directly; a business rule duplicated in two service functions instead
+of shared; a new one-off CSS class instead of an existing component;
+skipping the negative/scope test because "the happy path passes."
+
+\section{How to Add a New Page}
+
+1) Add a route function in the appropriate blueprint (or a new
+blueprint, registered in \code{create\_app}). 2) Apply
+\code{login\_required} or \code{role\_required(...)} --- never leave a
+route with no decorator by assuming a template will hide it
+appropriately. 3) Call an existing service function, or add a new one
+following the \code{AccessScope}-first, self-checking pattern used
+everywhere else. 4) Create a template extending \code{base.html},
+reusing \code{icons.html}/\code{badges.html}/existing component
+classes rather than inventing new markup patterns. 5) Add CSS only if a
+genuinely new component is needed, as tokens-driven classes in
+\file{components.css} --- never inline \code{style="..."} (the CSP
+blocks it) and never a page-specific stylesheet. 6) Add route-level
+tests covering the authorization boundary (who can/can't reach it) and
+at least one real data scenario, not just a 200-status smoke test.
+
+\section{How to Modify Existing Business Logic}
+
+Business logic lives in exactly one place per rule --- find the owning
+service function (Chapter~4 documents where each domain's logic lives)
+and change it there, never by adding a special case in a route or
+template. Update the tests that exercise that function directly (both
+the "happy path" and any edge case already covered), and re-run the
+broader suite for that domain, not just the one changed test.
+Reconsider authorization explicitly: does the change affect what a
+manager vs.\ admin vs.\ employee can see or do? Reconsider database
+integrity: does an existing CHECK/EXCLUDE constraint still hold, or
+does the change require a new migration? Regression risk is highest
+exactly where this codebase has already been bitten once ---
+overtime/labor-cost double-counting, timezone/business-date attribution,
+and IDOR-style scope leaks are the three areas with the most defensive
+test coverage for a reason.
+
+\section{Known Limitations}
+
+\begin{longtable}{@{}p{2.6cm}p{3.4cm}p{3.6cm}p{2.4cm}p{3.0cm}@{}}
+\toprule
+\textbf{Area} & \textbf{Current state} & \textbf{Limitation} & \textbf{Impact} & \textbf{Future direction} \\
+\midrule
+\endhead
+Breaks & A single \code{break\_minutes} integer per shift/entry &
+  No break start/end events, no multiple breaks, no "on break" status &
+  Product & Add a real break-session model if finer-grained tracking is
+  required \\
+Leave balances & \code{LeaveType} is a catalog only & No accrual/days-
+  remaining ledger & Product & Add a balance ledger tied to leave type
+  and employee \\
+Paid leave costing & \code{LeaveType.is\_paid} unused by labor cost &
+  Approved leave contributes \$0 to every cost figure & Product /
+  Financial accuracy & Requires a real business decision on OT
+  interaction before implementing (\S4.6) \\
+User provisioning & No self-service signup route exists & \VERIFY:
+  provisioning path (CLI/direct DB) is not established in application
+  code & Technical & Add an admin-facing "invite user" flow if needed \\
+Rate limiting & Per-account lockout only (5 attempts / 15 min) & No
+  IP-based or distributed rate limiting & Security & Add at the reverse
+  proxy or application middleware layer \\
+API & Server-rendered HTML only, no JSON API & No path for a future
+  mobile app or external integration without one & Technical /
+  Scalability & Add a versioned JSON API layer alongside existing
+  routes if needed \\
+Reverse proxy / TLS & Gunicorn's port published directly in
+  \code{docker-compose.yml} & No Nginx or equivalent in the current
+  deployment config & Technical & Add a reverse proxy in front of
+  Gunicorn for any real deployment \\
+Report range & Overtime/Hours-Trend/Labor-Cost queries clamped to 92
+  days & A genuine "since inception" report is not obtainable in one
+  request & UX / Technical & Add pagination or background export for
+  wider ranges if needed \\
+Audit log immutability & Enforced by application convention only & No
+  verified database-level protection (e.g.\ a restricted grant or
+  trigger) against a future code path issuing \code{UPDATE}/\code{DELETE} &
+  Security & \VERIFY{} and consider a database-level enforcement \\
+\bottomrule
+\end{longtable}
+
+\section{Recommended Roadmap}
+
+\subsection*{MVP 1 (current)}
+
+The system as documented in this book is, by the project's own
+definition (\file{CLAUDE.md}), a complete MVP~1: authentication, roles,
+employees, departments, scheduling, attendance, leave, overtime, labor
+cost, reports, and audit logging are all implemented, tested, and
+authorization-reviewed.
+
+\subsection*{MVP 2 (suggested, not committed)}
+
+Prioritized by the project's own stated order (security, data
+integrity, core workflows, UX, reporting, scalability, advanced
+functionality):
+
+\begin{enumerate}[nosep]
+  \item Resolve the two explicitly documented gaps in \S8.6: paid-leave
+        costing (needs a business decision first) and leave balances.
+  \item A real break-tracking model, if operationally needed.
+  \item A user-provisioning workflow (invite/reset flow) if account
+        creation is currently a manual/CLI-only process in practice.
+  \item A reverse proxy and TLS termination for production deployment.
+\end{enumerate}
+
+\subsection*{Future (vision, per \file{CLAUDE.md})}
+
+Workforce demand forecasting, AI-assisted scheduling, and schedule
+optimization are named as the long-term direction for this product ---
+explicitly \emph{not} part of MVP~1 or MVP~2, and explicitly required
+(per \file{CLAUDE.md}) to consume this system's verified data as an
+input, never to replace it as the authority. None of this exists in the
+codebase today; it is recorded here only because it is the project's
+own stated direction, not because any of it is implemented or
+scheduled.

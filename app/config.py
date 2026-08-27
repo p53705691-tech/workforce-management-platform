@@ -38,6 +38,16 @@ class BaseConfig:
     # an active user to re-authenticate mid-shift.
     PERMANENT_SESSION_LIFETIME = timedelta(hours=12)
 
+    # Without this, Flask's default (True) re-signs the session cookie
+    # with a fresh expiry timestamp on every response for a permanent
+    # session, turning the "absolute" 12-hour expiry above into a
+    # 12-hour *idle* timeout instead — an actively-used (or
+    # periodically-polled) stolen cookie would then never actually
+    # expire, defeating the whole point of PERMANENT_SESSION_LIFETIME
+    # (security-review finding). False makes the expiry timestamp fixed
+    # at login and never extended.
+    SESSION_REFRESH_EACH_REQUEST = False
+
     # This is a form-based app with no file uploads, so 1 MB is generous
     # for any legitimate request body. Without this, Flask has no upper
     # bound on request body size and the already-registered 413 handler
@@ -54,6 +64,11 @@ class TestingConfig(BaseConfig):
     DEBUG = True
     SQLALCHEMY_DATABASE_URI = os.environ.get("TEST_DATABASE_URL")
     WTF_CSRF_ENABLED = False
+    # The test suite logs in far more than any real rate limit would
+    # allow within its run time (many tests share one session-scoped app
+    # — see tests/conftest.py), so per-IP login throttling would produce
+    # spurious failures unrelated to what each test actually checks.
+    RATELIMIT_ENABLED = False
 
 
 class ProductionConfig(BaseConfig):

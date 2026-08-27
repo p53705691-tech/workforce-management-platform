@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}My Profile — Workforce Management Platform{% endblock %}
+
+{% block content %}
+  <div class="profile-header">
+    <div class="profile-avatar">{{ employee.first_name[0] }}{{ employee.last_name[0] }}</div>
+    <div>
+      <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
+      <p class="text-muted">
+        {{ employee.employee_number }} &middot; {{ department_names.get(employee.department_id, "—") }}
+        &middot; {{ badges.status_badge(employee.employment_status, {"active": "success", "inactive": "neutral", "terminated": "danger"}) }}
+      </p>
+    </div>
+  </div>
+
+  {# Read-only vs editable is a visual distinction, not just a label
+     repeated on every row (MVP-1_version2.md §21) — everything above
+     the "Contact Information" card is managed by the organization;
+     that one card alone gets the accent "you can edit this" treatment. #}
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("users") }} Employment Information</h2>
+    <p class="text-muted">Managed by your organization — contact an admin or manager to change any of this.</p>
+    <div class="field-grid">
+      <div class="field-item">
+        <span class="field-label">Employee number</span>
+        <span class="field-value">{{ employee.employee_number }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Department</span>
+        <span class="field-value">{{ department_names.get(employee.department_id, "—") }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Status</span>
+        <span class="field-value">{{ badges.status_badge(employee.employment_status, {"active": "success", "inactive": "neutral", "terminated": "danger"}) }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Hired on</span>
+        <span class="field-value">{{ employee.hired_on }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Work email</span>
+        <span class="field-value">{{ employee.email or "—" }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card card--editable">
+    <h2 class="card-title">{{ icons.icon("check-circle") }} Contact Information</h2>
+    <p class="text-muted">You can update this yourself.</p>
+    <form method="post" action="{{ url_for('employees.update_my_profile') }}" novalidate>
+      {{ contact_form.hidden_tag() }}
+      <div class="form-field">
+        {{ contact_form.phone.label }}
+        {{ contact_form.phone() }}
+        {% for error in contact_form.phone.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Save changes</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("users") }} Account Settings</h2>
+    <div class="field-grid">
+      <div class="field-item">
+        <span class="field-label">Sign-in email</span>
+        <span class="field-value">{{ linked_user.email if linked_user else "—" }}</span>
+      </div>
+      <div class="field-item">
+        <span class="field-label">Role</span>
+        <span class="field-value">{{ (linked_user.role | title) if linked_user else "—" }}</span>
+      </div>
+    </div>
+    <p class="text-muted card-note">A profile photo isn't available yet.</p>
+  </div>
+
+  <div class="card card--editable">
+    <h2 class="card-title">{{ icons.icon("check-circle") }} Change Password</h2>
+    <form method="post" action="{{ url_for('auth.change_password_route') }}" novalidate>
+      {{ password_form.hidden_tag() }}
+      <div class="form-field">
+        {{ password_form.current_password.label }}
+        {{ password_form.current_password() }}
+        {% for error in password_form.current_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ password_form.new_password.label }}
+        {{ password_form.new_password() }}
+        {% for error in password_form.new_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ password_form.confirm_new_password.label }}
+        {{ password_form.confirm_new_password() }}
+        {% for error in password_form.confirm_new_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Change password</button>
+    </form>
+  </div>
+{% endblock %}

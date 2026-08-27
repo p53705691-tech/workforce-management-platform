@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% import "components/icons.html" as icons %}
+
+{% block title %}Account — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Account</h1>
+      <p class="text-muted">{{ current_user.email }} &middot; {{ current_user.role | title }}</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div class="card card--editable">
+    <h2 class="card-title">{{ icons.icon("check-circle") }} Change Password</h2>
+    <form method="post" action="{{ url_for('auth.change_password_route') }}" novalidate>
+      {{ password_form.hidden_tag() }}
+      <div class="form-field">
+        {{ password_form.current_password.label }}
+        {{ password_form.current_password() }}
+        {% for error in password_form.current_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ password_form.new_password.label }}
+        {{ password_form.new_password() }}
+        {% for error in password_form.new_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ password_form.confirm_new_password.label }}
+        {{ password_form.confirm_new_password() }}
+        {% for error in password_form.confirm_new_password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Change password</button>
+    </form>
+  </div>
+{% endblock %}

@@ -11,6 +11,7 @@ from app.auth.passwords import hash_password, verify_password
 from app.extensions import db
 from app.models.user import User
 from app.services import audit as audit_service
+from app.services.errors import ValidationError
 
 MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION = timedelta(minutes=15)
@@ -152,3 +153,32 @@ def authenticate(email: str, password: str) -> LoginResult:
     )
     db.session.commit()
     return LoginResult(True, user, None)
+
+
+def change_password(user: User, current_password: str, new_password: str) -> None:
+    """Change the signed-in ``user``'s own password.
+
+    Requires re-entering the current password — standard defense
+    against a hijacked, still-logged-in session being used to lock the
+    real account owner out permanently. Not role-restricted: any
+    authenticated user may change their own password, regardless of
+    role, since this is a property of the login itself, not the
+    Employee domain.
+    """
+    if not verify_password(user.password_hash, current_password):
+        raise ValidationError(
+            "Current password is incorrect.", field="current_password"
+        )
+
+    user.password_hash = hash_password(new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
+    audit_service.record(
+        "password_changed",
+        "user",
+        entity_id=user.id,
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+    )
+    # One commit covers both the password change and the audit entry
+    # above — see app.services.audit's module docstring.
+    db.session.commit()

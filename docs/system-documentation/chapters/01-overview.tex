@@ -1,0 +1,367 @@
+\chapter{System Overview, Technology, and Structure}
+
+\section{What Is This System?}
+
+The Workforce Management Platform is a server-rendered web application
+that helps a single organization answer the practical, day-to-day
+questions a business asks about its hourly workforce:
+
+\begin{itemize}[nosep]
+  \item Who is scheduled to work, and who actually worked?
+  \item How many hours did each employee work, and how much of that was
+        overtime?
+  \item Who is on approved leave, and who has a leave request waiting?
+  \item How much is labor costing the organization, per department?
+  \item What privileged changes has anyone made recently?
+\end{itemize}
+
+The system is built around six core domain concepts, each with its own
+models and service module:
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[flownode, text width=3.1cm] (dept) {Departments};
+  \node[flownode, text width=3.1cm, right=of dept] (emp) {Employees};
+  \node[flownode, text width=3.1cm, right=of emp] (sched) {Scheduling\\(Shifts)};
+  \node[flownode, text width=3.1cm, below=of dept] (att) {Attendance};
+  \node[flownode, text width=3.1cm, below=of emp] (leave) {Leave};
+  \node[flownode, text width=3.1cm, below=of sched] (cost) {Overtime \&\\Labor Cost};
+\end{tikzpicture}
+\end{center}
+
+Two of these concepts are deliberately kept separate and are never
+conflated anywhere in the codebase:
+
+\begin{itemize}
+  \item \textbf{Scheduling} (the \code{Shift} model) represents
+        \emph{planned} work --- what an employee is expected to work.
+  \item \textbf{Attendance} (the \code{AttendanceEntry} model)
+        represents \emph{actual} work --- what really happened, recorded
+        via clock-in/clock-out.
+\end{itemize}
+
+Working hours, overtime, and labor cost are all \emph{derived} from
+these two record types rather than stored as independent numbers -- see
+Chapter~4 for exactly how.
+
+\subsection*{Who Uses It}
+
+Three roles share the same application, each seeing a different slice
+of it, enforced by \code{AccessScope} (Chapter~2):
+
+\begin{itemize}[nosep]
+  \item \textbf{Admin} --- full access to one organization: every
+        employee, every department, pay rates, labor cost detail, the
+        audit log, and every management action.
+  \item \textbf{Manager} --- restricted to the departments they are
+        assigned to manage (\code{department\_managers}). Can manage
+        schedules, attendance, and leave for their own people, and see
+        department-level cost \emph{totals} --- never an individual
+        employee's pay rate or exact cost.
+  \item \textbf{Employee} --- self-service only: their own schedule,
+        their own attendance (clock in/out), their own leave requests.
+\end{itemize}
+
+\section{Product Scope}
+
+The table below reflects what actually exists in the codebase today,
+verified against the route and service modules in \file{app/routes/}
+and \file{app/services/}.
+
+\begin{longtable}{@{}p{4.2cm}p{2.7cm}p{7.3cm}@{}}
+\toprule
+\textbf{Capability} & \textbf{Status} & \textbf{Description} \\
+\midrule
+\endhead
+Authentication & Implemented & Email/password login, Argon2 hashing,
+  account lockout after repeated failures, absolute session expiry. \\
+User accounts \& roles & Implemented & \code{admin} / \code{manager} /
+  \code{employee}, enforced by DB \code{CHECK} constraint and
+  \code{AccessScope}. \\
+Departments & Implemented & CRUD (admin), soft-deactivation, manager
+  assignment via \code{department\_managers}. \\
+Employees & Implemented & CRUD, employment status lifecycle
+  (active/inactive/terminated), department assignment. \\
+Scheduling (shifts) & Implemented & Draft/published/cancelled shifts,
+  employee assignment, overlap and leave-conflict prevention. \\
+Check-in / check-out & Implemented & Self-service and admin/manager
+  on-behalf-of clock-in/out, single-open-entry enforcement. \\
+Breaks & \PARTIAL & A single \code{break\_minutes} integer per shift/
+  entry only --- there is no separate break start/end event, no
+  multiple-breaks-per-shift model, and no \code{BreakSession} table
+  anywhere in the schema. \\
+Attendance correction & Implemented & Admin/manager correction with a
+  mandatory reason; stale open entries auto-flagged \code{needs\_review}. \\
+Working hours & Implemented & Derived from closed attendance entries
+  only; scheduled-vs-worked comparison per employee/day. \\
+Overtime & Implemented & Configurable daily/weekly tiered policy,
+  pure-function tiering, no double-counting across tiers. \\
+Leave & Implemented & Request/approve/reject/cancel lifecycle, overlap
+  prevention, shift-conflict detection on approval. \\
+Leave balances / accrual & \PLANNED & \code{LeaveType} is a catalog
+  only; no "days remaining" ledger exists. \\
+Labor cost & Implemented & Decimal, per-line-item rounded cost;
+  department totals (admin/manager) and per-employee breakdown (admin
+  only). \\
+Paid leave costing & \PLANNED & \code{LeaveType.is\_paid} is stored but
+  never read by the labor-cost module; approved leave currently
+  contributes \$0 to every cost figure (documented explicitly in
+  \file{app/services/labor\_cost.py}). \\
+Reports & Implemented & Overtime-hours report and hours-trend report,
+  both department-scoped. \\
+Audit log & Implemented & Append-only, admin-only, paginated,
+  date-range filtered; a lighter "Recent Activity" view over the same
+  data. \\
+Reduced information density: workforce demand forecasting, AI-assisted
+scheduling, schedule optimization & \PLANNED & Explicitly out of scope
+  for MVP~1 per \file{CLAUDE.md}. \\
+\bottomrule
+\end{longtable}
+
+\section{Technology Stack}
+
+Every entry below is a real, currently-used dependency, verified
+against \file{requirements.txt} and the import statements in
+\file{app/}.
+
+\subsection*{Python 3.14}
+\textbf{What:} The application's implementation language.
+\textbf{Why:} Type hints, dataclasses, and the standard \code{zoneinfo}
+module (used throughout for timezone-aware date arithmetic) are used
+extensively across the service layer.
+\textbf{Where:} Everywhere under \file{app/}.
+
+\subsection*{Flask 3.1}
+\textbf{What:} A minimal WSGI web framework.
+\textbf{Why:} Matches the project's "modular monolith, not a
+microservice framework" architectural preference (\file{CLAUDE.md}) ---
+Flask imposes very little structure of its own, leaving the
+routes/services/models layering to be an explicit project convention
+rather than a framework-enforced one.
+\textbf{Where:} \code{create\_app()} in \file{app/\_\_init\_\_.py};
+every blueprint in \file{app/routes/}.
+\textbf{Responsibility:} HTTP request/response handling, routing,
+session cookies, template rendering.
+
+\subsection*{SQLAlchemy 2.0 (ORM) + PostgreSQL}
+\textbf{What:} SQLAlchemy is the Object-Relational Mapper; PostgreSQL is
+the relational database.
+\textbf{Why:} The domain has many real relational invariants (no
+overlapping shifts, no double clock-in, effective-dated pay rates and
+overtime policies) that are enforced with PostgreSQL-specific features
+--- \code{EXCLUDE} constraints using \code{gist} indexes over
+\code{tstzrange}/\code{daterange}, partial unique indexes, and
+composite foreign keys --- not just application code.
+\textbf{Where:} \file{app/models/*.py} (declarative models, using the
+2.0-style \code{Mapped[...]} annotations); every \code{db.session}
+query in \file{app/services/*.py}.
+\textbf{Responsibility:} Schema definition, query construction,
+transaction management.
+
+\subsection*{Flask-Migrate (Alembic)}
+\textbf{What:} Database migration tooling built on Alembic.
+\textbf{Why:} Schema changes must go through versioned, reviewable
+migration scripts rather than ad hoc DDL (\file{.claude/rules/database.md}).
+\textbf{Where:} \file{migrations/versions/0001} through \file{0016}.
+\textbf{Responsibility:} Applying and reversing schema changes in a
+controlled, ordered sequence.
+
+\subsection*{Flask-Login}
+\textbf{What:} Session-based authentication helper.
+\textbf{Why:} Provides \code{current\_user}, the \code{login\_required}
+decorator, and the user-loader hook this project uses to invalidate a
+session the instant an account is deactivated or locked (see
+Chapter~2).
+\textbf{Where:} \code{app.extensions.login\_manager};
+\code{app/models/user.py}'s \code{load\_user}; \file{app/auth/decorators.py}.
+
+\subsection*{Flask-WTF}
+\textbf{What:} WTForms integration with built-in CSRF protection.
+\textbf{Why:} Every state-changing form in the application needs CSRF
+protection and server-side field validation; Flask-WTF provides both
+with one consistent pattern.
+\textbf{Where:} \code{app.extensions.csrf}; every form class in
+\file{app/forms.py}.
+
+\subsection*{argon2-cffi}
+\textbf{What:} A Python binding for the Argon2 password-hashing
+algorithm.
+\textbf{Why:} Argon2 is the current recommended password hash for new
+applications (memory-hard, resistant to GPU cracking), used here
+instead of an older algorithm like bcrypt or PBKDF2.
+\textbf{Where:} \file{app/auth/passwords.py} (\code{hash\_password} /
+\code{verify\_password}), wrapping \code{argon2.PasswordHasher}.
+
+\subsection*{Gunicorn}
+\textbf{What:} A production-grade WSGI HTTP server for Python.
+\textbf{Why:} Flask's own development server is explicitly
+unsuitable for production; Gunicorn is the process that actually serves
+requests in the Docker image.
+\textbf{Where:} \file{Dockerfile}'s \code{CMD}: \code{gunicorn -b
+0.0.0.0:8000 wsgi:app}.
+
+\subsection*{HTML, CSS, and Vanilla JavaScript}
+\textbf{What:} Server-rendered Jinja2 templates, a hand-written CSS
+design-token system, and a small amount of unframeworked JavaScript.
+\textbf{Why:} \file{CLAUDE.md} explicitly forbids introducing a
+frontend framework (React/Vue/Angular) without justification; the UI
+is rendered entirely server-side.
+\textbf{Where:} \file{templates/}, \file{static/css/}, \file{static/js/main.js}.
+See Chapter~6 for the design-system details.
+
+\subsection*{pytest}
+\textbf{What:} The test framework.
+\textbf{Why:} Used for unit, integration, and route-level tests across
+the whole codebase (458 tests at the time of writing).
+\textbf{Where:} \file{tests/}. See Chapter~7.
+
+\section{High-Level Architecture}
+
+The application is a \textbf{modular monolith}: a single deployable
+Flask process, internally organized into clearly separated layers,
+rather than a collection of independently deployed services. This is a
+deliberate choice (\file{.claude/rules/architecture.md}) --- the domain
+is not large enough to justify the operational cost of microservices,
+and a monolith keeps transactional integrity simple (a leave approval
+that also writes an audit entry is one database transaction, not a
+distributed one).
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[flownode] (browser) {Browser (HTML forms, no JS framework)};
+  \node[flownode, below=of browser] (flask) {Flask Application (\code{create\_app})};
+  \node[smallnode, below left=0.6cm and 0.4cm of flask] (routes) {Routes\\ (\file{app/routes/})};
+  \node[smallnode, below right=0.6cm and 0.4cm of flask] (auth) {Authentication \&\\ Authorization\\ (\file{app/auth/})};
+  \node[flownode, below=1.6cm of flask] (services) {Services (business logic) --- \file{app/services/}};
+  \node[flownode, below=of services] (orm) {SQLAlchemy ORM --- \file{app/models/}};
+  \node[flownode, below=of orm] (pg) {PostgreSQL};
+
+  \draw[flowarrow] (browser) -- (flask);
+  \draw[flowarrow] (flask) -- (routes);
+  \draw[flowarrow] (flask) -- (auth);
+  \draw[flowarrow] (routes.south) -- (services.north west);
+  \draw[flowarrow] (auth.south) -- (services.north east);
+  \draw[flowarrow] (services) -- (orm);
+  \draw[flowarrow] (orm) -- (pg);
+\end{tikzpicture}
+\end{center}
+
+\subsection*{Why Routes Stay Thin}
+
+Every route module's docstring states the same rule: a route builds an
+\code{AccessScope} from the signed-in user and delegates \emph{all}
+authorization and data access to a service function --- no route
+queries the database directly (the one historical exception,
+\code{app.routes.audit}, was fixed to go through
+\code{app.services.audit.list\_entries} instead, per that module's own
+``Round C fix'' docstring). This keeps HTTP concerns (form parsing,
+flashing messages, redirects) separate from business rules, and means a
+business rule is only ever expressed once.
+
+\subsection*{Why Business Logic Belongs in Services}
+
+Every function in \file{app/services/*.py} takes the caller's
+\code{AccessScope} as its first argument and re-checks authorization
+itself, \emph{independent of whatever the route layer already checked}.
+This "belt-and-suspenders" pattern means that even if a route were
+missing a decorator, the service function underneath would still refuse
+an unauthorized call. It also means services are usable from multiple
+entry points (a route, a CLI command, a future API) without
+re-implementing authorization each time.
+
+\subsection*{Why Models Represent Persistence Only}
+
+Models in \file{app/models/} are declarative SQLAlchemy classes with
+constraints and relationships, and carry essentially no business logic
+of their own (a few carry a \code{\_\_repr\_\_} for debugging and
+nothing else). Validation and business rules live in the service layer;
+the database's own constraints (Chapter~3) are the last line of
+defense, not the primary one.
+
+\subsection*{How Authorization Is Enforced}
+
+See Chapter~2 for the full authorization model. In summary: a route
+decorator (\code{login\_required} / \code{role\_required}) provides a
+first, coarse check; every service function re-checks the caller's
+role and organizational/department scope before touching data; and
+several database constraints (composite foreign keys tying a child row's
+organization to its parent's) make a cross-tenant write impossible even
+if every application-level check were somehow bypassed.
+
+\section{Complete Project Tree}
+
+The tree below is the actual top-level layout of the repository (test
+cache, \file{.git}, and Python bytecode caches omitted), matching
+\file{.claude/rules/project-structure.md}'s canonical layout.
+
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
+job/
+|-- app/
+|   |-- auth/            Authentication & authorization helpers
+|   |   |-- decorators.py    login_required / role_required
+|   |   |-- passwords.py     Argon2 hashing wrapper
+|   |   |-- redirects.py     Open-redirect-safe "next" handling
+|   |   |-- scope.py         AccessScope + get_scoped_or_404
+|   |   `-- service.py       Login business logic, lockout policy
+|   |-- models/          SQLAlchemy declarative models (13 tables)
+|   |-- routes/          Flask blueprints (thin HTTP layer)
+|   |-- services/        Business logic (the bulk of the application)
+|   |-- cli.py           Flask CLI commands (attendance flag-stale, seed)
+|   |-- config.py        Environment-driven configuration classes
+|   |-- errors.py        400/403/404/413/500 error handlers
+|   |-- extensions.py    Flask extension singletons (db, login, csrf...)
+|   |-- forms.py         WTForms form classes
+|   `-- __init__.py      create_app() application factory
+|-- migrations/
+|   `-- versions/        16 ordered Alembic migration scripts
+|-- templates/           Jinja2 templates (one subfolder per blueprint)
+|   |-- components/      Shared macros: icons, badges, sidebar, topbar
+|   `-- errors/          400/403/404/413/500 error pages
+|-- static/
+|   |-- css/             tokens.css, base.css, components.css, layout.css
+|   |-- fonts/           Self-hosted variable fonts (woff2)
+|   `-- js/main.js       Small vanilla-JS behavior layer
+|-- tests/               pytest suite (458 tests)
+|   |-- unit/            Pure-function tests, no DB/Flask app
+|   |-- integration/     Service-layer tests against a real test DB
+|   `-- routes/          Full HTTP request/response tests
+|-- docs/                This documentation (see docs/system-documentation/)
+|-- CLAUDE.md            Project-wide AI/developer instructions
+|-- .claude/rules/       Per-topic project rules (architecture, security, ...)
+|-- docker-compose.yml   app + postgres services for local/containerized use
+|-- Dockerfile           Production image: Gunicorn serving wsgi:app
+|-- requirements.txt     Pinned Python dependencies
+`-- wsgi.py              WSGI entrypoint (create_app())
+\end{lstlisting}
+
+\subsection*{Important Directories}
+
+\textbf{\file{app/routes/}} --- One blueprint per domain area
+(attendance, audit, auth, dashboard, departments, employees,
+labor\_cost, leave, main, schedule). Each file's own docstring restates
+the "thin route, delegate to services" rule.
+
+\textbf{\file{app/services/}} --- The actual business logic: attendance,
+audit, availability, departments, employees, labor\_cost, leave,
+overtime, pay\_rates, reports, scheduling, working\_hours. This is the
+directory a new developer should read first to understand what the
+system actually does (see Chapter~9's "How to add a feature").
+
+\textbf{\file{app/auth/}} --- Everything authorization-related lives
+here, isolated from both routes and services so it can be reasoned
+about (and reviewed) as a single unit. \code{AccessScope} in
+\code{scope.py} is the single data structure every authorization
+decision in the codebase is built from.
+
+\textbf{\file{migrations/versions/}} --- The authoritative history of
+the schema. Because Alembic migrations are additive scripts, the actual
+deployed schema is the cumulative effect of all 16 files, not just the
+current state of \file{app/models/} (see Chapter~3, \S3.4, on why the
+two are cross-checked rather than assumed identical).
+
+\textbf{\file{tests/}} --- Organized by test \emph{kind}, not by
+feature: \file{unit/} needs no database or Flask app context at all
+(e.g.\ the overtime tiering math); \file{integration/} exercises a
+service function against a real PostgreSQL test database; \file{routes/}
+drives the application exactly as an HTTP client would, including
+session cookies and CSRF tokens.

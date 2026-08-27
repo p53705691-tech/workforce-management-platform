@@ -1,10 +1,25 @@
 {% extends "base.html" %}
 
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
 {% block title %}Leave — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Leave requests</h1>
+{% set pending_count = requests | selectattr("status", "equalto", "pending") | list | length %}
 
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Leave Management</h1>
+      <p class="text-muted">
+        {{ requests|length }} request{{ "s" if requests|length != 1 else "" }}{% if status %} · {{ status|title }}{% endif %}
+        {% if pending_count and not status %} · {{ pending_count }} awaiting review{% endif %}
+      </p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
   <form method="get" class="filter-form">
     <label>Status
       <select name="status">
@@ -15,113 +30,130 @@
         <option value="cancelled" {% if status == "cancelled" %}selected{% endif %}>Cancelled</option>
       </select>
     </label>
+    {% if can_manage %}
+      <label>Employee
+        <select name="employee_id">
+          <option value="">All employees</option>
+          {% for employee_id, name in employee_choices %}
+            <option value="{{ employee_id }}" {% if selected_employee_id == employee_id %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    {% endif %}
     <button type="submit">Filter</button>
   </form>
 
-  <h2>Request leave</h2>
-  <form method="post" action="{{ url_for('leave.request_leave') }}" novalidate>
-    {{ request_form.hidden_tag() }}
-    {% if request_form.employee_id is defined %}
-      <div class="form-field">
-        {{ request_form.employee_id.label }}
-        {{ request_form.employee_id() }}
-      </div>
-    {% endif %}
-    <div class="form-field">
-      {{ request_form.leave_type_id.label }}
-      {{ request_form.leave_type_id() }}
-    </div>
-    <div class="form-field">
-      {{ request_form.starts_at.label }}
-      {{ request_form.starts_at() }}
-    </div>
-    <div class="form-field">
-      {{ request_form.ends_at.label }}
-      {{ request_form.ends_at() }}
-    </div>
-    <div class="form-field">
-      {{ request_form.reason.label }}
-      {{ request_form.reason() }}
-    </div>
-    <button type="submit">Submit request</button>
-  </form>
-
   {% if requests %}
-    <table>
-      <thead>
-        <tr>
-          <th>Starts</th>
-          <th>Ends</th>
-          {% if can_manage %}<th>Employee</th>{% endif %}
-          <th>Type</th>
-          <th>Status</th>
-          <th>Reason</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for leave_request in requests %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
           <tr>
-            <td>{{ leave_request.starts_at | local_dt(tz) }}</td>
-            <td>{{ leave_request.ends_at | local_dt(tz) }}</td>
-            {% if can_manage %}
-              <td>{{ employee_names.get(leave_request.employee_id, "—") }}</td>
-            {% endif %}
-            <td>{{ leave_type_names.get(leave_request.leave_type_id, "—") }}</td>
-            <td>{{ leave_request.status }}</td>
-            <td>{{ leave_request.reason or "—" }}</td>
-            <td>
-              {% if leave_request.id in conflicts and conflicts[leave_request.id] %}
-                <p class="field-error">
-                  Conflicting published shift(s):
-                  {% for shift in conflicts[leave_request.id] %}
-                    #{{ shift.id }} ({{ shift.starts_at | local_dt(tz) }} - {{ shift.ends_at | local_dt(tz) }}){% if not loop.last %}, {% endif %}
-                  {% endfor %}
-                </p>
-              {% endif %}
-
-              {% if leave_request.id in approve_forms %}
-                <details>
-                  <summary>Approve</summary>
-                  {% set form = approve_forms[leave_request.id] %}
-                  <form method="post" action="{{ url_for('leave.approve_leave', leave_request_id=leave_request.id) }}" novalidate>
-                    {{ form.hidden_tag() }}
-                    {{ form.decision_note.label }}
-                    {{ form.decision_note() }}
-                    <button type="submit">Approve</button>
-                  </form>
-                </details>
-              {% endif %}
-
-              {% if leave_request.id in reject_forms %}
-                <details>
-                  <summary>Reject</summary>
-                  {% set form = reject_forms[leave_request.id] %}
-                  <form method="post" action="{{ url_for('leave.reject_leave', leave_request_id=leave_request.id) }}" novalidate>
-                    {{ form.hidden_tag() }}
-                    {{ form.decision_note.label }}
-                    {{ form.decision_note() }}
-                    {% for error in form.decision_note.errors %}
-                      <p class="field-error">{{ error }}</p>
-                    {% endfor %}
-                    <button type="submit">Reject</button>
-                  </form>
-                </details>
-              {% endif %}
-
-              {% if leave_request.id in cancel_forms %}
-                {% set form = cancel_forms[leave_request.id] %}
-                <form method="post" action="{{ url_for('leave.cancel_leave', leave_request_id=leave_request.id) }}">
-                  {{ form.hidden_tag() }}
-                  <button type="submit">Cancel</button>
-                </form>
-              {% endif %}
-            </td>
+            {% if can_manage %}<th>Employee</th>{% endif %}
+            <th>Type</th>
+            <th>Dates</th>
+            <th>Status</th>
+            <th>Reason</th>
+            <th>Action</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for leave_request in requests %}
+            <tr class="{{ 'leave-row-pending' if leave_request.status == 'pending' else '' }}">
+              {% if can_manage %}
+                <td data-label="Employee">{{ employee_names.get(leave_request.employee_id, "—") }}</td>
+              {% endif %}
+              <td data-label="Type">{{ leave_type_names.get(leave_request.leave_type_id, "—") }}</td>
+              {% set leave_start = leave_request.starts_at.astimezone(tz) %}
+              {% set leave_end = leave_request.ends_at.astimezone(tz) %}
+              <td class="leave-dates" data-label="Dates">
+                {% if leave_start.date() == leave_end.date() %}
+                  <span>{{ leave_start.strftime("%b %-d, %Y") }}</span>
+                {% else %}
+                  <span>{{ leave_start.strftime("%b %-d") }} – {{ leave_end.strftime("%b %-d, %Y") }}</span>
+                {% endif %}
+                <span class="text-muted">{{ leave_start.strftime("%H:%M") }} – {{ leave_end.strftime("%H:%M") }}</span>
+              </td>
+              <td data-label="Status">
+                {{ badges.status_badge(
+                  leave_request.status,
+                  {"pending": "warning", "approved": "success", "rejected": "danger", "cancelled": "neutral"}
+                ) }}
+              </td>
+              <td data-label="Reason">{{ leave_request.reason or "—" }}</td>
+              <td data-label="Action">
+                {% if leave_request.id in conflicts and conflicts[leave_request.id] %}
+                  <p class="field-error">
+                    Conflicting published shift(s):
+                    {% for shift in conflicts[leave_request.id] %}
+                      #{{ shift.id }} ({{ shift.starts_at | local_dt(tz) }} - {{ shift.ends_at | local_dt(tz) }}){% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  </p>
+                {% endif %}
+
+                <div class="row-actions">
+                {% if leave_request.id in approve_forms %}
+                  {# A single "Review" entry point, not two competing
+                     buttons per row: Approve/Reject are mutually
+                     exclusive outcomes of the same decision, so they
+                     belong behind one disclosure rather than cluttering
+                     the row with two large controls (see the Leave page
+                     UX brief). decision_note is optional on Approve
+                     (ApproveLeaveForm) and required on Reject
+                     (RejectLeaveForm) — both forms keep their own
+                     existing validation, only the presentation changed. #}
+                  <details class="leave-review"{% if reject_forms[leave_request.id].errors %} open{% endif %}>
+                    <summary class="btn btn-primary">Review</summary>
+                    <div class="leave-review-panel">
+                      {% with form = approve_forms[leave_request.id] %}
+                        <form method="post" action="{{ url_for('leave.approve_leave', leave_request_id=leave_request.id) }}" novalidate>
+                          {{ form.hidden_tag() }}
+                          {{ form.decision_note.label }}
+                          {{ form.decision_note() }}
+                          <button type="submit" class="btn btn-primary">Approve</button>
+                        </form>
+                      {% endwith %}
+                      {% with form = reject_forms[leave_request.id] %}
+                        <form method="post" action="{{ url_for('leave.reject_leave', leave_request_id=leave_request.id) }}" novalidate>
+                          {{ form.hidden_tag() }}
+                          {{ form.decision_note.label }}
+                          {{ form.decision_note() }}
+                          {% for error in form.decision_note.errors %}
+                            <p class="field-error">{{ error }}</p>
+                          {% endfor %}
+                          <button type="submit" class="btn btn-danger">Reject</button>
+                        </form>
+                      {% endwith %}
+                    </div>
+                  </details>
+                {% endif %}
+
+                {% if leave_request.id in cancel_forms %}
+                  {% with form = cancel_forms[leave_request.id] %}
+                    <form method="post" action="{{ url_for('leave.cancel_leave', leave_request_id=leave_request.id) }}"
+                          data-confirm="Cancel this leave request?">
+                      {{ form.hidden_tag() }}
+                      <button type="submit" class="btn btn-secondary">Cancel</button>
+                    </form>
+                  {% endwith %}
+                {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% elif status or selected_employee_id %}
+    <div class="state-card">
+      {{ icons.icon("calendar-off") }}
+      <h4>No results for this filter</h4>
+      <p>Try a different status or employee, or clear the filters above.</p>
+    </div>
   {% else %}
-    <p>No leave requests in this view.</p>
+    <div class="state-card">
+      {{ icons.icon("calendar-off") }}
+      <h4>No leave requests</h4>
+      <p>There are no leave requests yet.</p>
+    </div>
   {% endif %}
 {% endblock %}

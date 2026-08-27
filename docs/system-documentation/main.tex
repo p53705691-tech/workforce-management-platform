@@ -1,0 +1,193 @@
+\documentclass[11pt,twoside]{report}
+
+% ---------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------
+\usepackage[a4paper,margin=2.5cm,bindingoffset=0.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{seqsplit}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.multipart}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{calc}
+\usepackage[hidelinks,pdfusetitle]{hyperref}
+
+% ---------------------------------------------------------------------
+% Colors
+% ---------------------------------------------------------------------
+\definecolor{inkblue}{HTML}{1B2A4A}
+\definecolor{accent}{HTML}{2C5DE0}
+\definecolor{muted}{HTML}{5B6472}
+\definecolor{linegray}{HTML}{D6DAE0}
+\definecolor{codebg}{HTML}{F4F5F7}
+\definecolor{admincolor}{HTML}{2C5DE0}
+\definecolor{managercolor}{HTML}{9A6B00}
+\definecolor{employeecolor}{HTML}{1F8A5F}
+\definecolor{plannedcolor}{HTML}{B4231F}
+
+% ---------------------------------------------------------------------
+% Section styling
+% ---------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{inkblue}}
+  {\Large\color{accent}PART \thechapter}
+  {8pt}
+  {\Huge}
+\titleformat{\section}{\normalfont\Large\bfseries\color{inkblue}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries\color{inkblue}}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.2pt}
+\fancyhead[LE,RO]{\small\thepage}
+\fancyhead[RE]{\small\nouppercase{\leftmark}}
+\fancyhead[LO]{\small\nouppercase{\rightmark}}
+\fancyfoot[C]{\small\color{muted}Workforce Management Platform --- Technical System Documentation}
+
+% ---------------------------------------------------------------------
+% Code listings
+% ---------------------------------------------------------------------
+\lstdefinestyle{codebox}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{linegray},
+  framesep=6pt,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  showstringspaces=false,
+  keywordstyle=\color{accent}\bfseries,
+  commentstyle=\color{muted}\itshape,
+  stringstyle=\color{inkblue},
+  tabsize=4,
+}
+\lstset{style=codebox}
+
+% ---------------------------------------------------------------------
+% Small helper macros used across chapters
+% ---------------------------------------------------------------------
+\newcommand{\code}[1]{\texttt{\small #1}}
+% For long, unhyphenatable identifiers (e.g. a full test function name)
+% that would otherwise overflow a narrow table cell or quote block —
+% seqsplit permits breaking anywhere, unlike plain \texttt.
+\newcommand{\longcode}[1]{\texttt{\small\seqsplit{#1}}}
+\newcommand{\file}[1]{\texttt{\small #1}}
+\newcommand{\route}[1]{\texttt{\small #1}}
+
+% Status tags used throughout, per the accuracy requirement: every claim
+% about a feature is tagged as implemented (default, no tag needed),
+% PARTIALLY IMPLEMENTED, PLANNED / NOT IMPLEMENTED, or NEEDS VERIFICATION.
+\newcommand{\PARTIAL}{\textcolor{managercolor}{\textbf{[PARTIALLY IMPLEMENTED]}}}
+\newcommand{\PLANNED}{\textcolor{plannedcolor}{\textbf{[PLANNED / NOT IMPLEMENTED]}}}
+\newcommand{\VERIFY}{\textcolor{muted}{\textbf{[NEEDS VERIFICATION]}}}
+
+% A compact "field: value" line, used throughout the page-by-page
+% documentation chapter to avoid repeating a heavier list environment
+% fourteen times per page across sixteen pages.
+\newcommand{\pf}[2]{\par\noindent\textbf{\color{inkblue}#1:} #2\par\smallskip}
+
+% A small labeled box for a business rule entry (Part XIV).
+\newenvironment{businessrule}[2]{%
+  \par\noindent\textbf{\color{accent}#1} --- \textbf{#2}\par\smallskip
+  \begin{quote}
+}{%
+  \end{quote}\bigskip
+}
+
+% Generic TikZ flow-chain style: a vertical sequence of labeled boxes
+% connected by arrows, used for every linear process diagram in this
+% document (request lifecycle, login flow, check-in/out flow, etc.).
+\tikzset{
+  flownode/.style={
+    rectangle, rounded corners=2pt, draw=accent, thick,
+    fill=codebg, text width=6.6cm, align=center,
+    minimum height=0.9cm, font=\small
+  },
+  flowarrow/.style={-{Latex[length=2.5mm]}, thick, color=inkblue},
+  smallnode/.style={
+    rectangle, rounded corners=2pt, draw=muted, thick,
+    fill=white, text width=4.6cm, align=center,
+    minimum height=0.8cm, font=\footnotesize
+  },
+}
+
+\begin{document}
+
+% =======================================================================
+% COVER PAGE
+% =======================================================================
+\begin{titlepage}
+\centering
+\vspace*{2.5cm}
+
+{\Huge\bfseries\color{inkblue} Workforce Management Platform\par}
+\vspace{0.6cm}
+{\LARGE\color{accent} Technical System Documentation\par}
+\vspace{0.3cm}
+{\Large\color{muted} MVP 1\par}
+
+\vspace{2.5cm}
+
+\begin{minipage}{0.8\textwidth}
+\centering
+\small
+\textbf{Project purpose:} A production-oriented workforce management
+platform covering employees, departments, scheduling, attendance,
+working hours, overtime, leave, labor cost, reporting, and audit
+logging for a single organization at a time (multi-tenant at the data
+layer).
+
+\vspace{0.4cm}
+\textbf{Technology stack:} Python 3.14, Flask 3.1, SQLAlchemy 2.0,
+Flask-Migrate (Alembic), PostgreSQL, Flask-Login, Flask-WTF,
+argon2-cffi, Gunicorn, server-rendered Jinja templates, plain CSS and
+vanilla JavaScript.
+
+\vspace{0.4cm}
+\textbf{Documentation version:} 1.0
+
+\vspace{0.2cm}
+\textbf{Generated:} August 2026
+\end{minipage}
+
+\vfill
+
+{\footnotesize\color{muted} This document is generated directly from the
+project's source code, database migrations, and test suite. It contains
+no fictional companies, infrastructure, or functionality. Any feature
+that is planned but not implemented is explicitly labelled\\
+\PLANNED, and any incomplete area is labelled \PARTIAL.\par}
+
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+\input{chapters/01-overview.tex}
+\input{chapters/02-routing-auth.tex}
+\input{chapters/03-database.tex}
+\input{chapters/04-domain.tex}
+\input{chapters/05-pages.tex}
+\input{chapters/06-frontend-security.tex}
+\input{chapters/07-testing-flows.tex}
+\input{chapters/08-deployment-maintenance.tex}
+\input{chapters/09-reference.tex}
+
+\end{document}

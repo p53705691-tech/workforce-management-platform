@@ -1,0 +1,345 @@
+\chapter{Application Routing, Authentication, and Authorization}
+
+\section{Route / Blueprint Architecture}
+
+The application registers ten Flask blueprints in \code{create\_app()}
+(\file{app/\_\_init\_\_.py}), plus one inline route (\code{/healthz})
+registered directly on the app for container health checks. The table
+below is a complete map of every route in the codebase, extracted
+directly from the blueprint files.
+
+\begin{longtable}{@{}p{1.5cm}p{2.9cm}p{1.0cm}p{1.5cm}p{4.2cm}p{3.6cm}@{}}
+\toprule
+\textbf{Blueprint} & \textbf{Route} & \textbf{Method} & \textbf{Role} &
+\textbf{Key service call(s)} & \textbf{Template} \\
+\midrule
+\endhead
+main & \route{/} & GET & any & --- (redirect) & redirects to \longcode{dashboard.index} \\
+auth & \route{/login} & GET/POST & public & \longcode{auth.service.authenticate} & \file{auth/login.html} \\
+auth & \route{/logout} & POST & any & \longcode{flask\_login.logout\_user} & redirect \\
+dashboard & \route{/dashboard} & GET & any & \longcode{reports.*} (many) & \file{dashboard/admin.html} or \file{dashboard/employee.html} \\
+dashboard & \route{/reports/overtime} & GET & admin, manager & \longcode{reports.overtime\_summary} & \file{reports/overtime.html} \\
+dashboard & \route{/reports/hours-trend} & GET & admin, manager & \longcode{reports.hours\_trend} & \file{reports/hours\_trend.html} \\
+attendance & \route{/attendance} & GET & any & \longcode{reports.attendance\_entries\_with\_context}, \longcode{reports.current\_attendance\_status} & \file{attendance/list.html} \\
+attendance & \route{/attendance/clock-in} & POST & any & \longcode{attendance.clock\_in} & redirect \\
+attendance & \route{/attendance/\allowbreak<id>/clock-out} & POST & any & \longcode{attendance.clock\_out} & redirect \\
+attendance & \route{/attendance/\allowbreak<id>/correct} & POST & admin, manager & \longcode{attendance.correct\_entry} & redirect \\
+schedule & \route{/schedule} & GET & any & \longcode{scheduling.list\_shifts} & \file{schedule/list.html} \\
+schedule & \route{/schedule} & POST & admin, manager & \longcode{scheduling.create\_shift} & redirect / re-render \\
+schedule & \route{/schedule/<id>} & POST & admin, manager & \longcode{scheduling.update\_shift} & redirect \\
+schedule & \route{/schedule/\allowbreak<id>/assign} & POST & admin, manager & \longcode{scheduling.assign\_employee} & redirect \\
+schedule & \route{/schedule/\allowbreak<id>/publish} & POST & admin, manager & \longcode{scheduling.publish\_shift} & redirect \\
+schedule & \route{/schedule/\allowbreak<id>/cancel} & POST & admin, manager & \longcode{scheduling.cancel\_shift} & redirect \\
+leave & \route{/leave} & GET & any & \longcode{leave.list\_leave\_requests} & \file{leave/list.html} \\
+leave & \route{/leave} & POST & any & \longcode{leave.request\_leave} & redirect \\
+leave & \route{/leave/\allowbreak<id>/approve} & POST & admin, manager & \longcode{leave.approve\_leave} & redirect \\
+leave & \route{/leave/<id>/reject} & POST & admin, manager & \longcode{leave.reject\_leave} & redirect \\
+leave & \route{/leave/<id>/cancel} & POST & any & \longcode{leave.cancel\_leave} & redirect \\
+employees & \route{/employees} & GET & admin, manager & \longcode{employees.list\_employees} & \file{employees/list.html} \\
+employees & \route{/employees} & POST & admin & \longcode{employees.create\_employee} & redirect / re-render \\
+employees & \route{/employees/<id>} & GET & any & \longcode{employees.get\_employee}, \longcode{employees.get\_linked\_user} & \file{employees/detail.html} \\
+employees & \route{/employees/<id>} & POST & admin, manager & \longcode{employees.update\_employee} & redirect \\
+employees & \route{/employees/\allowbreak<id>/terminate} & POST & admin & \longcode{employees.terminate\_employee} & redirect \\
+employees & \route{/employees/\allowbreak<id>/pay-rate} & GET & admin & \longcode{pay\_rates.list\_pay\_rate\_history} & \file{employees/pay\_rate.html} \\
+employees & \route{/employees/\allowbreak<id>/pay-rate} & POST & admin & \longcode{pay\_rates.set\_pay\_rate} & redirect \\
+departments & \route{/departments} & GET & admin, manager & \longcode{departments.list\_departments} & \file{departments/list.html} \\
+departments & \route{/departments} & POST & admin & \longcode{departments.create\_department} & redirect / re-render \\
+departments & \route{/departments/<id>} & POST & admin & \longcode{departments.update\_department} & redirect \\
+departments & \route{/departments/\allowbreak<id>/deactivate} & POST & admin & \longcode{departments.deactivate\_department} & redirect \\
+labor\_cost & \route{/labor-cost} & GET & admin, manager & \longcode{labor\_cost.department\_cost\_summary} & \file{labor\_cost/index.html} \\
+labor\_cost & \route{/labor-cost/\allowbreak employees/<id>} & GET & admin & \longcode{labor\_cost.range\_cost\_for\_employee} & \texttt{\small\seqsplit{labor\_cost/employee\_detail.html}} \\
+audit & \route{/audit-log} & GET & admin & \longcode{audit.list\_entries} & \file{audit/list.html} \\
+audit & \route{/recent-activity} & GET & admin & \longcode{reports.recent\_activity} & \file{audit/recent\_activity.html} \\
+(app-level) & \route{/healthz} & GET & public & --- & JSON \longcode{\{"status": "ok"\}} \\
+\bottomrule
+\end{longtable}
+
+\noindent\textit{"Role" above is the minimum \code{role\_required(...)}
+on the route; ``any'' means \code{login\_required} only (every
+authenticated role may reach the route, though what it returns still
+differs by role --- e.g.\ \route{/attendance} shows only the caller's
+own entries for an employee).}
+
+\section{Request Lifecycle}
+
+Every page load in the application follows the same path. This is the
+concrete version of the generic layered architecture from Chapter~1,
+now including where \code{AccessScope} is built and where the
+Jinja/CSS layer fits in.
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[flownode] (n1) {Browser sends an HTTP request (session cookie attached)};
+  \node[flownode, below=of n1] (n2) {Flask routes the request to a blueprint view function};
+  \node[flownode, below=of n2] (n3) {Flask-Login resolves \code{current\_user} from the session (\code{load\_user})};
+  \node[flownode, below=of n3] (n4) {\code{login\_required} / \code{role\_required} decorator checks};
+  \node[flownode, below=of n4] (n5) {\code{build\_scope\_for\_user(current\_user)} builds an \code{AccessScope}};
+  \node[flownode, below=of n5] (n6) {Route calls one or more service functions, passing the scope};
+  \node[flownode, below=of n6] (n7) {Service function re-checks authorization, then queries via SQLAlchemy};
+  \node[flownode, below=of n7] (n8) {PostgreSQL executes the query, enforcing its own constraints};
+  \node[flownode, below=of n8] (n9) {Service returns plain data (models / dataclasses) to the route};
+  \node[flownode, below=of n9] (n10) {Route calls \code{render\_template(...)} with that data};
+  \node[flownode, below=of n10] (n11) {Jinja renders HTML, pulling in CSS/JS from \file{static/}};
+  \node[flownode, below=of n11] (n12) {Flask sends the HTML response, with security headers attached};
+
+  \foreach \a/\b in {n1/n2,n2/n3,n3/n4,n4/n5,n5/n6,n6/n7,n7/n8,n8/n9,n9/n10,n10/n11,n11/n12}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+The security headers in the last step (\code{X-Content-Type-Options},
+\code{X-Frame-Options}, \code{Referrer-Policy}, a strict
+\code{Content-Security-Policy}, and conditionally \code{Strict-\allowbreak
+Transport-Security}) are attached by an \code{@app.after\_request} hook
+in \file{app/\_\_init\_\_.py} to \emph{every} response, not just
+authenticated pages. See Chapter~6, \S6.1, for why the CSP can afford to
+be this strict (no external scripts, no inline styles, no CDN fonts).
+
+\section{Authentication}
+
+\subsection*{Login}
+
+\code{POST /login} (\file{app/routes/auth.py}) delegates credential
+checking entirely to \longcode{app.auth.service.authenticate}. That function:
+
+\begin{enumerate}[nosep]
+  \item Looks up the user by email. If none exists, the account is
+        inactive, or the account is currently locked, it still runs a
+        \emph{real} Argon2 verification against a fixed dummy hash
+        (\code{\_burn\_dummy\_verification\_time}) before returning
+        failure --- this keeps response timing statistically
+        indistinguishable across every failure reason, closing a
+        user-enumeration timing side-channel.
+  \item On a genuine password mismatch, increments
+        \code{failed\_login\_count} and, once it reaches
+        \code{MAX\_FAILED\_LOGIN\_ATTEMPTS} (5), sets
+        \code{locked\_until} to 15 minutes in the future
+        (\code{LOCKOUT\_DURATION}).
+  \item On success, resets the failure counter, records
+        \code{last\_login\_at}, and stages an audit log entry.
+  \item Every branch returns the identical, generic
+        \code{"Invalid email or password."} message --- the UI never
+        reveals \emph{which} of "no such account" / "wrong password" /
+        "account locked" applies.
+\end{enumerate}
+
+On success, the route (\file{app/routes/auth.py}) calls
+\code{session.clear()} \emph{before} \code{login\_user(...)} --- this
+discards any pre-authentication session state (including the
+already-validated CSRF token) so nothing from before login carries into
+the authenticated session, a defense against session fixation. It then
+sets \code{session.permanent = True}, so the cookie expires
+\code{PERMANENT\_SESSION\_LIFETIME} (12 hours) after login regardless of
+activity, and redirects to a same-site-validated \code{next} target
+(\code{app.auth.redirects.get\_safe\_redirect\_target} --- see \S6.1
+for the open-redirect defense).
+
+\subsection*{Password Hashing}
+
+Passwords are hashed with Argon2 (\code{argon2.PasswordHasher}'s
+defaults) in \file{app/auth/passwords.py}. The plaintext password is
+never stored, logged, or included in an audit entry anywhere in the
+codebase (verified: \code{audit\_service.record}'s \code{changes} dict
+is built explicitly, field by field, at every call site --- there is no
+code path that could pass a whole form or a raw password through).
+
+\subsection*{Sessions}
+
+Flask-Login's signed session cookie is the only session mechanism ---
+there is no separate server-side session table. This means the
+\code{load\_user} hook in \code{app/models/user.py} (invoked on
+\emph{every} request for an authenticated user) is the actual
+enforcement point for "has this account been deactivated or locked out
+since the cookie was issued?" --- it returns \code{None} (forcing
+re-authentication) if \code{is\_active} is false or \code{locked\_until}
+is still in the future, even for an otherwise validly-signed cookie.
+
+\subsection*{Account Lockout}
+
+Implemented exactly as described under Login above:
+\code{failed\_login\_count} (a small integer, \code{CHECK ... >= 0}) and
+\code{locked\_until} (nullable timestamptz) on the \code{users} table.
+A wrong-password attempt against an already-\emph{expired} lock resets
+the counter to 1 (treating it as the first attempt of a fresh window)
+rather than incrementing a stale count back over the threshold --- see
+the inline comment in \code{authenticate} for why the naive version of
+this logic could re-lock an account indefinitely from one further wrong
+guess per lockout period.
+
+\subsection*{Unauthorized Requests}
+
+An unauthenticated request to any \code{login\_required} route is
+redirected to \code{/login} by Flask-Login (\code{login\_manager.login\_view
+= "auth.login"}), with a flashed message ("Please log in to access this
+page."). A request from an authenticated user lacking the required role
+receives a plain \textbf{403} (\code{abort(403)} inside
+\code{role\_required}), rendered by \file{templates/errors/403.html}.
+
+\section{Authorization}
+
+This is the most important subsystem in the codebase to understand
+correctly, because a mistake here is a data-leak or privilege-escalation
+bug, not a cosmetic one.
+
+\subsection*{AccessScope}
+
+Every authorization decision in the application is built from one
+frozen dataclass, \code{app.auth.scope.AccessScope}:
+
+\begin{lstlisting}[language=Python]
+@dataclass(frozen=True)
+class AccessScope:
+    user_id: int
+    organization_id: int
+    role: str                       # 'admin' | 'manager' | 'employee'
+    department_ids: frozenset[int]  # populated only for 'manager'
+    employee_id: int | None         # populated for 'employee' (and any
+                                     # admin/manager who also has a
+                                     # linked employee record)
+\end{lstlisting}
+
+\code{build\_scope\_for\_user(current\_user)} constructs this once per
+request, at the top of every route, by querying
+\code{department\_managers} for a manager's assigned department ids.
+Every route in the table in \S2.1 calls this before doing anything
+else.
+
+\subsection*{Defense in Depth}
+
+Authorization is checked at up to three independent layers, and the
+codebase's own module docstrings repeatedly call this out as
+deliberate:
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.4cm]
+  \node[flownode] (a) {Route decorator (\code{login\_required} / \code{role\_required}) --- coarse, role-only};
+  \node[flownode, below=of a] (b) {Service function re-checks role \emph{and} organizational/department scope};
+  \node[flownode, below=of b] (c) {Database query is itself filtered by \code{organization\_id} (and, for a manager, \code{department\_id})};
+  \node[flownode, below=of c] (d) {Composite foreign keys make a cross-tenant row physically unrepresentable};
+  \node[flownode, below=of d, fill=white, draw=inkblue] (e) {\textbf{Authorized data reaches the template}};
+
+  \foreach \a/\b in {a/b,b/c,c/d,d/e}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\textbf{Why not rely on hiding UI elements?} A hidden button is a
+client-side courtesy, not a security control --- a browser's developer
+tools or a hand-crafted \code{curl} request can submit any form
+regardless of what the rendered HTML shows. Every service function in
+this codebase enforces its own rule regardless of what the calling
+route or template does, so an attacker who reaches a route directly
+(bypassing the UI entirely) gets exactly the same rejection a normal
+user browsing the hidden feature would have. \file{tests/routes/test\_idor\_sweep.py}
+exists specifically to exercise this: it drives routes directly with an
+out-of-scope id and asserts a 404, not just checks that a link is
+absent from a page.
+
+\subsection*{The IDOR Defense: \code{get\_scoped\_or\_404}}
+
+\code{app.auth.scope.get\_scoped\_or\_404(model, obj\_id, scope)} is the
+standard way to fetch a single tenant-owned row. It always filters by
+\code{organization\_id}, and additionally filters by
+\code{department\_id} when the model has that column and the caller is
+a manager. Critically, an out-of-scope row returns \textbf{404, not
+403} --- so a caller cannot distinguish "this id doesn't exist" from
+"this id exists but belongs to someone else," which would otherwise
+leak the existence of other organizations'/departments' data through
+the response code alone. Several models without a \code{department\_id}
+column of their own (\code{AttendanceEntry}, \code{LeaveRequest})
+implement the same 404-not-403 pattern by hand, via a join to the
+owning employee (e.g.\ \code{attendance.\_get\_entry\_for\_scope}).
+
+\subsection*{Organization Scoping}
+
+Every tenant-owned table carries an \code{organization\_id} column, and
+every service query filters on it. This is reinforced at the database
+level: every child table's foreign key to a parent (e.g.\ an employee's
+department, a shift's employee) is a \emph{composite} foreign key on
+\code{(parent\_id, organization\_id)}, referencing a matching composite
+unique constraint on the parent --- so it is not merely
+application-code discipline that prevents, say, an employee row from
+pointing at a department in a different organization; the schema itself
+makes it impossible.
+
+\subsection*{Manager Department Scoping}
+
+A manager's \code{department\_ids} (Chapter~2's \code{AccessScope})
+comes from the \code{department\_managers} join table. Every
+manager-reachable service function filters its query by
+\code{department\_id IN scope.department\_ids} (directly, or via a join
+to the owning employee for tables with no department column). Because
+this filter is applied \emph{before} any caller-supplied filter
+parameter (e.g.\ \route{?employee\_id=} or \route{?department\_id=} on
+several list views), a manager passing an out-of-scope id gets an
+\emph{empty intersection}, never that other department's data --- this
+composition order is exercised directly by tests such as
+\code{test\_manager\_filtering\_by\_an\_unmanaged\_employee\_sees\_no\_data}.
+
+\subsection*{Admin Privileges}
+
+An admin has no \code{department\_ids} restriction at all --- every
+manager-or-admin-reachable service function's manager-scoping branch is
+skipped entirely for \code{role == "admin"}. Admin is still confined to
+their own \code{organization\_id} like every other role (there is no
+concept of a cross-organization "super-admin" anywhere in the schema or
+code).
+
+\subsection*{Manager Privileges}
+
+Everything an admin can do within their managed departments, with two
+explicit, hard-coded exceptions the codebase calls "rule A4": a manager
+may see a department's aggregate labor cost \emph{total}
+(\code{labor\_cost.department\_cost\_summary}) and an employee's
+overtime \emph{hours} (\code{reports.overtime\_summary}, which reads
+only \code{LineItem.hours}/\code{.category}, never \code{.rate} or
+\code{.cost}) --- but never an individual employee's hourly pay rate or
+per-employee cost breakdown. Those two views
+(\route{/employees/<id>/pay-rate} and
+\route{/labor-cost/employees/<id>}) are hard-coded
+\code{role\_required("admin")}, not \code{role\_required("admin",
+"manager")} like most of the rest of the application.
+
+\subsection*{Employee Privileges}
+
+Self-service only: their own schedule (published shifts only), their
+own attendance (clock in/out, view history), their own leave requests.
+An employee-role \code{AccessScope} has no \code{department\_ids} at
+all (an empty frozenset) --- every service function's employee branch
+checks identity (\code{scope.employee\_id == target\_id}) rather than
+department membership.
+
+\section{Role Matrix}
+
+Verified directly against the \code{role\_required(...)} decorators and
+each service function's own internal role check --- not guessed from
+route names.
+
+\begin{longtable}{@{}p{6.4cm}p{2.6cm}p{2.9cm}p{2.9cm}@{}}
+\toprule
+\textbf{Feature} & \textbf{ADMIN} & \textbf{MANAGER} & \textbf{EMPLOYEE} \\
+\midrule
+\endhead
+View own dashboard & Org-wide overview & Managed-department overview & Personal dashboard \\
+View / create / edit departments & Full & View only & No access \\
+Deactivate a department & Yes & No & No \\
+View employee list & Org-wide & Managed departments & No access (route is admin/manager only) \\
+View one employee's detail page & Any employee & Managed-department employees & Own record only \\
+Create / edit an employee & Yes & Edit only, managed departments & No \\
+Terminate an employee & Yes & No & No \\
+View / set an employee's pay rate & Yes & No & No \\
+View a department's labor cost total & Yes & Managed departments & No \\
+View an employee's labor cost breakdown & Yes & No & No \\
+View / create shifts & Org-wide & Managed departments & View own published shifts only \\
+Assign / publish / cancel a shift & Yes & Managed departments & No \\
+Clock in / out (self) & Yes & Yes & Yes \\
+Clock in/out on another's behalf & Yes & Managed departments & No \\
+Correct an attendance entry & Yes & Managed departments & No (not even their own) \\
+Request leave (self) & Yes & Yes & Yes \\
+Request leave on another's behalf & Yes & Managed departments & No \\
+Approve / reject leave & Yes & Managed departments & No \\
+Cancel a leave request & Any & Managed departments & Own, while still pending \\
+View overtime / hours-trend reports & Yes & Managed departments & No \\
+View the audit log / recent activity & Yes & No & No \\
+\bottomrule
+\end{longtable}

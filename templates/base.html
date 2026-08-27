@@ -21,8 +21,6 @@
       </aside>
       <div class="shell-main">
         {% include "components/topbar.html" %}
-  {% else %}
-    <div class="brand brand-standalone">Workforce Management Platform</div>
   {% endif %}
 
         <main id="main-content">
@@ -40,10 +38,6 @@
 
           {% block content %}{% endblock %}
         </main>
-
-        <footer>
-          <p>&copy; Workforce Management Platform</p>
-        </footer>
 
   {% if current_user.is_authenticated %}
       </div>

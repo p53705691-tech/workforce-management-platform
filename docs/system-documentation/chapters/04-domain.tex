@@ -1,0 +1,499 @@
+\chapter{Business Domain}
+
+\section{Employee Domain}
+
+An \code{Employee} row is the HR record: name, employee number
+(organization-unique), department, employment status
+(\code{active}/\code{inactive}/\code{terminated}), optional email/phone,
+hire date, and (for a terminated employee) a termination date.
+
+\textbf{Creation} (\code{employees.create\_employee}, admin only)
+validates the target department belongs to the caller's organization
+and creates the row with \code{employment\_status} as given by the
+caller (the create form only offers \code{active}/\code{inactive} ---
+see \file{app/forms.py}'s comment on why \code{terminated} is
+deliberately excluded from that choice list).
+
+\textbf{Editing} (\code{employees.update\_employee}, admin or a manager
+restricted to their own managed departments) accepts a fixed set of
+fields (name, department, contact info, employment status, weekly
+contract hours) --- reassigning department is a plain field edit here,
+not a separate action.
+
+\textbf{Termination} (\code{employees.terminate\_employee}, admin only)
+is its own dedicated action, not a generic status edit, because it must
+set \code{terminated\_on} in the same step to satisfy the
+\code{terminated\_status\_matches\_terminated\_on} CHECK constraint.
+Terminating an employee never touches their existing shifts or
+attendance history --- see \S4.3 for why a shift already assigned to a
+since-terminated employee is left alone.
+
+\textbf{Employee/department relationship} is mandatory (an employee
+cannot exist without a department) and validated on every write, not
+just at creation.
+
+\textbf{Employee/user relationship} is optional and one-to-one (\S3.4)
+--- see \S4.2.
+
+\section{User Account Domain}
+
+A \code{User} is the login identity: email, Argon2 password hash,
+\code{role}, and an optional link (\code{employee\_id}) to an
+\code{Employee} record.
+
+\begin{center}
+\resizebox{0.85\textwidth}{!}{%
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[flownode] (usr) {User (login, role, password hash)};
+  \node[smallnode, below left=0.6cm and 0.3cm of usr] (role) {Role: admin / manager / employee};
+  \node[smallnode, below right=0.6cm and 0.3cm of usr] (emp) {Employee (0..1, optional link)};
+  \node[smallnode, below=1.2cm of emp] (sched) {Schedule};
+  \node[smallnode, below=2.0cm of emp, xshift=-1.6cm] (att) {Attendance};
+  \node[smallnode, below=2.0cm of emp, xshift=1.6cm] (leave) {Leave};
+
+  \draw[flowarrow] (usr) -- (role);
+  \draw[flowarrow] (usr) -- (emp);
+  \draw[flowarrow] (emp) -- (sched);
+  \draw[flowarrow] (emp) -- (att);
+  \draw[flowarrow] (emp) -- (leave);
+\end{tikzpicture}%
+}
+\end{center}
+
+\textbf{Account creation.} There is no self-service sign-up route
+anywhere in the codebase --- every \code{User} row is created directly
+(there is no \code{create\_user} service function or route at all; the
+only path visible in the code is the \code{flask seed overtime-policy}
+CLI command's neighbor pattern, and direct database/CLI provisioning).
+This is a genuine gap worth calling out: \VERIFY{} how user accounts
+are provisioned in a real deployment is not established by the
+application code itself.
+
+\textbf{Authentication, role assignment, and what an account can
+access} are covered in full in Chapter~2.
+
+\textbf{Account status.} \code{is\_active} (boolean) and
+\code{locked\_until} (temporary, from the lockout policy) are the two
+account-status mechanisms that exist. There is no separate
+"disabled/pending/invited" status enum --- an account is either active
+or not.
+
+\section{Scheduling Domain}
+
+A \code{Shift} represents \emph{planned} work: a department, an
+optional assigned employee, a start/end time, a break duration, and a
+lifecycle status.
+
+\subsection*{Lifecycle}
+
+\begin{center}
+\begin{tikzpicture}[node distance=1.4cm]
+  \node[flownode, text width=3.2cm] (draft) {draft};
+  \node[flownode, text width=3.2cm, right=of draft] (pub) {published};
+  \node[flownode, text width=3.2cm, right=of pub] (cancel) {cancelled};
+  \draw[flowarrow] (draft) -- node[above,font=\scriptsize]{publish\_shift (requires an assigned employee)} (pub);
+  \draw[flowarrow] (draft.south) .. controls +(0,-1) and +(0,-1) .. node[below,font=\scriptsize]{cancel\_shift} (cancel.south);
+  \draw[flowarrow] (pub.south) .. controls +(0,-1.6) and +(0,-1.6) .. node[below,font=\scriptsize]{cancel\_shift} (cancel.south);
+\end{tikzpicture}
+\end{center}
+
+A shift is created as \code{draft}. Only a draft shift can be edited
+directly via \code{update\_shift} (department, times, break, notes) ---
+once published, its fields are locked except through the dedicated
+\code{assign\_employee} (reassignment is allowed even after publishing,
+to cover a call-out), \code{publish\_shift}, and \code{cancel\_shift}
+actions. \code{publish\_shift} requires an employee already assigned;
+\code{cancel\_shift} never deletes the row (history is preserved for
+reporting) and works from either \code{draft} or \code{published}.
+
+\subsection*{Overlap Prevention and Employee Assignment}
+
+Assigning an employee to a shift (\code{create\_shift} with an
+\code{employee\_id}, or \code{assign\_employee}) runs three checks:
+
+\begin{enumerate}[nosep]
+  \item The employee exists in the caller's organization, is in a
+        department the caller may act on, and is currently
+        \code{active}.
+  \item No overlapping, non-cancelled shift already exists for that
+        employee (\longcode{availability.shifts\_overlapping}, backed by
+        the database's \longcode{ex\_shifts\_employee\_no\_overlap}).
+  \item No approved leave (of a leave type with
+        \code{blocks\_scheduling = true}) overlaps the shift's time
+        range (\longcode{availability.approved\_leave\_overlapping}) ---
+        this is a purely application-level check with no matching
+        database constraint, since leave and shifts are different
+        tables.
+\end{enumerate}
+
+\subsection*{Department Relationships and Coverage}
+
+\code{scheduling.coverage\_summary} answers "do we have enough people
+scheduled" with a deliberately minimal pair of counts (published shifts
+that day vs.\ active employees in the department) --- not a full
+staffing model.
+
+\subsection*{Effective Dates and Validation}
+
+Shifts are not effective-dated in the way pay rates/overtime policies
+are; \code{business\_date} is simply the local calendar date of
+\code{starts\_at} in the organization's timezone (rule A1), computed
+once at creation/update time by the service layer, never re-derived by
+the database. A shift is capped at 24 hours
+(\code{duration\_max\_24\_hours}), and its break cannot consume the
+entire shift (\code{break\_minutes\_less\_than\_duration}).
+
+\section{Attendance Domain}
+
+\code{AttendanceEntry} represents \emph{actual} work: who, when they
+started, when (if at all) they stopped, and how the record got there.
+
+\subsection*{Check-In}
+
+\code{attendance.clock\_in(scope, employee\_id=None, at=None)}:
+
+\begin{itemize}[nosep]
+  \item Defaults to the caller's own employee record; clocking in
+        someone else requires admin/manager (a manager only within
+        their own departments).
+  \item \code{at} defaults to "now"; only admin/manager may set a
+        different (backdated, never future) time --- an employee can
+        never backdate their own clock-in. A backdated time is bounded
+        to at most 90 days in the past (\code{\_MAX\_BACKDATE}).
+  \item Attempts to match the new entry to a single unambiguous
+        published shift within a 60-minute grace window on either
+        side (\code{\_match\_shift}); zero or more than one candidate
+        leaves \code{shift\_id} \code{NULL} rather than guessing.
+  \item The database's partial unique index
+        (\code{uq\_attendance\_entries\_employee\_id\_open}) is the
+        actual guarantee against a duplicate clock-in.
+\end{itemize}
+
+\subsection*{Check-Out}
+
+\code{attendance.clock\_out(scope, attendance\_entry\_id, at=None)}
+closes an open entry, setting \code{ended\_at} and \code{status =
+'closed'}. It explicitly rejects an already-\code{closed} entry, and ---
+importantly --- rejects a \code{needs\_review} entry outright: only
+\code{correct\_entry} (admin/manager, with a mandatory reason) can
+resolve one, "since that defeats the purpose of the review flag."
+
+\subsection*{Needs-Review Behavior}
+
+\code{attendance.flag\_stale\_open\_entries(cutoff\_hours=16)} (run via
+the \code{flask attendance flag-stale} CLI command, intended to be
+scheduled externally --- there is no in-process scheduler) marks every
+\code{open} entry older than the cutoff as \code{needs\_review},
+\emph{without ever inventing an end time}. This is the entirety of the
+"richer attendance state machine": there is no automatic break
+tracking, no multi-step state machine beyond
+\code{open}/\code{needs\_review}/\code{closed}. Any richer workflow
+(explicit break start/end, multiple open sessions) described elsewhere
+as an aspiration is \PLANNED, not implemented --- see \S1.2's product
+scope table.
+
+\subsection*{Correction}
+
+\code{attendance.correct\_entry} (admin/manager only, mandatory
+\code{edit\_reason}) is the \emph{only} way an entry's times may change
+after creation. It can set \code{started\_at}, \code{ended\_at}, and
+\code{break\_minutes}; setting \code{ended\_at} always closes the
+entry (satisfying the CHECK that ties status to \code{ended\_at}
+nullability). It is the only mechanism that can resolve a
+\code{needs\_review} entry.
+
+\subsection*{Break Handling}
+
+\PARTIAL{}. There is no \code{BreakSession} table and no break
+start/end event anywhere in the schema. \code{break\_minutes} is a
+single integer column on both \code{Shift} and \code{AttendanceEntry},
+subtracted from the total duration when computing worked/scheduled
+hours (\S4.7). There is no support for multiple breaks, break-start/end
+timestamps, or a "currently on break" status.
+
+\subsection*{Edge Cases Explicitly Handled}
+
+\begin{itemize}[nosep]
+  \item \textbf{Overnight entries} are a single row (not split at
+        midnight); \code{business\_date} attributes the whole entry to
+        its start date.
+  \item \textbf{Missing clock-out} is handled by the needs-review flag,
+        never by inventing an end time.
+  \item \textbf{Duplicate clock-in} is blocked by the DB's partial
+        unique index, independent of any application-level check.
+  \item \textbf{A closing time before the start time} is blocked by
+        the \code{ended\_after\_started} CHECK (translated to a
+        friendly error by \code{\_flush\_or\_raise}).
+\end{itemize}
+
+\section{Leave Domain}
+
+\subsection*{State Diagram}
+
+\begin{center}
+\begin{tikzpicture}[node distance=1.6cm]
+  \node[flownode, text width=2.6cm] (pending) {pending};
+  \node[flownode, text width=2.6cm, above right=1.0cm and 2.0cm of pending] (approved) {approved};
+  \node[flownode, text width=2.6cm, below right=1.0cm and 2.0cm of pending] (rejected) {rejected};
+  \node[flownode, text width=2.6cm, right=4.4cm of pending] (cancelled) {cancelled};
+
+  \draw[flowarrow] (pending) -- node[above,sloped,font=\scriptsize]{approve\_leave} (approved);
+  \draw[flowarrow] (pending) -- node[below,sloped,font=\scriptsize]{reject\_leave} (rejected);
+  \draw[flowarrow] (pending) -- node[below,font=\scriptsize]{cancel\_leave (owner or admin/manager)} (cancelled);
+  \draw[flowarrow] (approved) -- node[above,sloped,font=\scriptsize]{cancel\_leave (admin/manager only)} (cancelled);
+\end{tikzpicture}
+\end{center}
+
+Only these four states exist (\code{status\_valid} CHECK):
+\code{pending}, \code{approved}, \code{rejected}, \code{cancelled}.
+Notably, an \emph{approved} request can still be cancelled (by
+admin/manager only, "the employee's plans changed") --- the request's
+\code{decided\_by\_user\_id}/\code{decided\_at} are deliberately left
+untouched by \code{cancel\_leave}, so an approved-then-cancelled request
+stays distinguishable from a pending-then-cancelled one using
+\code{status} alone (see the extended rationale in
+\code{app/models/leave\_request.py}).
+
+\subsection*{Approval and Conflict Detection}
+
+\code{leave.approve\_leave} blocks the approval outright (with a
+\code{ValidationError} naming the specific conflicting shift ids and
+times) if any \emph{published}, non-cancelled shift overlaps the
+requested range for that employee. Self-approval is also blocked: if
+the approving admin/manager happens to also be the requesting employee
+(compared via \code{scope.employee\_id}), the approval is rejected.
+\code{leave.reject\_leave} requires a mandatory \code{decision\_note}
+(no such requirement for approval).
+
+\subsection*{Authorization}
+
+An employee may create and cancel (while pending) only their own
+requests. Admin/manager may act on requests within their scope
+(any department for admin, managed departments for a manager),
+including approving/rejecting, and may cancel a request in \emph{any}
+status.
+
+\subsection*{Leave Balances}
+
+\PLANNED{}. \code{LeaveType} is a catalog only (name, whether it's
+paid, whether it requires approval, whether it blocks scheduling) ---
+there is no ledger of days accrued or remaining anywhere in the schema
+or service layer.
+
+\section{Overtime Domain}
+
+Overtime is computed by \code{app.services.overtime}, a deliberately
+pure, database-free module (no I/O at all) so its tiering arithmetic
+can be unit-tested in complete isolation.
+
+\subsection*{Configuration}
+
+An organization's overtime rules are effective-dated data
+(\code{OvertimePolicy} + child \code{OvertimeTier} rows), never
+hardcoded constants. A policy carries a daily threshold, a weekly
+threshold, and a \code{week\_start\_day}; its tiers (each scoped
+\code{daily} or \code{weekly}) carry a multiplier and an
+\code{[from\_hours, to\_hours)} range \emph{beyond} the relevant
+threshold.
+
+\subsection*{Calculation}
+
+Confirmed business rules (from the module's own docstring, not to be
+re-derived or second-guessed elsewhere in the codebase):
+
+\begin{itemize}[nosep]
+  \item Daily overtime: the first 2 hours beyond the daily threshold
+        are paid at 1.5$\times$; daily overtime beyond that (hour 3+ of
+        daily OT) is paid at 2.0$\times$.
+  \item Weekly overtime: hours beyond the weekly threshold are paid at
+        1.5$\times$, but \emph{only} hours not already counted as daily
+        overtime for that week --- no worked hour is ever paid under
+        two multipliers.
+  \item No proration of the weekly threshold for a partial week.
+\end{itemize}
+
+For one day, given worked hours $H$, daily threshold $T_d$, and daily
+tiers $\{(f_i, t_i, m_i)\}$:
+
+\[
+  \text{regular\_hours} = \min(H, T_d), \qquad
+  \text{overtime\_hours} = \max(0,\, H - T_d)
+\]
+
+\code{overtime\_hours} is then split into per-tier buckets by
+\code{apply\_tiers}, each bucket priced separately (\S4.7). For a week,
+given each day's already-computed regular hours $r_1,\dots,r_7$ and
+weekly threshold $T_w$:
+
+\[
+  \text{weekly\_overtime\_eligible} = \max\!\left(0,\; \sum_{i=1}^{7} r_i - T_w\right)
+\]
+
+This is exactly what \code{compute\_weekly\_overtime} implements ---
+summing \emph{regular} hours (already net of daily OT), never total
+worked hours, is what prevents double-counting.
+
+\subsection*{Effective Dates and Policy Resolution}
+
+\longcode{overtime.resolve\_policy(organization\_id, on\_date)} finds the
+single policy whose \code{[effective\_from, effective\_to]} range
+covers \code{on\_date} (enforced unique at the database level by
+\longcode{ex\_overtime\_policies\_organization\_no\_overlap}), returning
+\code{None} if the organization has no policy configured for that date
+--- callers must handle that case explicitly, never assume a default.
+
+\subsection*{Reports and Authorization}
+
+\code{reports.overtime\_summary} (admin/manager) reports per-employee
+overtime \emph{hours} for a department/date range, reusing
+\code{labor\_cost.range\_cost\_for\_employee}'s already-correct tiering
+so an independent, hand-rolled hours calculation could never
+accidentally disagree with the money calculation. It reads only
+\code{LineItem.hours}/\code{.category} --- never \code{.rate} or
+\code{.cost} --- which is what makes this report safe for a manager to
+see under rule A4.
+
+\section{Labor Cost Domain}
+
+Labor cost is the money layer built on three already-verified
+components: worked seconds (\code{working\_hours}), overtime tiering
+(\code{overtime}), and effective-dated Decimal pay rates
+(\code{pay\_rates}). It adds no new business rule of its own --- it
+only prices what those three already compute.
+
+\subsection*{What "Labor Cost" Means Here}
+
+For each employee, each day, each priced category (regular time, a
+specific daily-OT tier, a specific weekly-OT tier), one \code{LineItem}
+is produced:
+
+\[
+  \text{cost} = \text{round}_{\text{HALF\_UP}}\bigl(\text{hours} \times \text{rate} \times \text{multiplier},\ 2\text{dp}\bigr)
+\]
+
+A department or range total is always the \emph{sum of already-rounded
+line items}, never a rounding of one combined raw total --- the two
+approaches can disagree by a cent, and the module's own test suite has
+a dedicated test proving they do in at least one real case.
+
+\subsection*{Rounding}
+
+\code{Decimal} is used throughout (never \code{float}) specifically
+because floating-point binary representation cannot exactly represent
+most decimal fractions (e.g.\ \$0.10), which would silently accumulate
+rounding error across thousands of line items in a payroll-adjacent
+calculation --- exactly the class of bug \file{.claude/rules/time-and-money.md}
+exists to prevent. Rounding uses \code{ROUND\_HALF\_UP} to two decimal
+places, applied once per line item.
+
+\subsection*{Weekly Overtime Reclassification}
+
+The trickiest part of this module: a naive implementation would price
+an hour once as "daily regular" and again as "weekly overtime,"
+overpaying. \code{range\_cost\_for\_employee} instead
+\emph{reclassifies} weekly-OT-eligible hours out of the regular pool
+\emph{before} building the daily "regular" line items, walking backward
+from the end of the week (by convention, the hours that pushed the week
+over its threshold are the ones worked latest in it) so every worked
+hour is priced in exactly one line item. Each reclassified hour is
+priced at the rate in force on the specific day it actually came from
+--- if an hourly rate changes mid-week, different portions of the same
+weekly-OT tier can legitimately be priced at different rates. The
+result is \emph{prorated}: a weekly-OT line item is only emitted for
+the portion of reclassified hours whose source day actually falls
+inside the caller's requested date range, so that
+$\text{cost}(\text{Mon..Sun}) = \text{cost}(\text{Mon..Wed}) +
+\text{cost}(\text{Thu..Sun})$ for any adjacent split of a week --- this
+exact invariant has a dedicated test.
+
+\subsection*{Department Aggregation and What Each Role Can See}
+
+\code{labor\_cost.department\_cost\_summary} (admin or manager, manager
+restricted to their own department) returns \textbf{only a total plus a
+count of unconfigured employees} --- never a per-employee figure, never
+a rate. An employee with genuinely worked hours but no configured pay
+rate or overtime policy for the range no longer blanks the whole
+department's total (a real bug fixed during development, called "Round
+A" in the module's docstring); instead they are excluded and counted,
+and the route surfaces that count as an explicit warning rather than a
+silently wrong total.
+
+\code{labor\_cost.range\_cost\_for\_employee} (the underlying
+per-employee, per-line-item detail, including \code{.rate} and
+\code{.cost}) is only ever rendered by the admin-only
+\route{/labor-cost/employees/<id>} view --- \emph{no other route in the
+codebase calls this function and renders its rate/cost fields}, which
+is the actual mechanism (not just a convention) keeping this data away
+from managers.
+
+\subsection*{Known, Documented Limitation: Paid Leave Is Not Costed}
+
+\code{LeaveType.is\_paid} is stored on the schema but never read
+anywhere in \code{labor\_cost.py} or elsewhere. Approved leave --- paid
+or not --- currently contributes exactly \$0 to every labor-cost figure
+in the system, because labor cost is derived solely from closed
+\code{AttendanceEntry} rows. This is documented explicitly in the
+module's own docstring as an open follow-up requiring a real business
+decision (does paid leave count toward overtime thresholds? at what
+rate is a leave hour priced?), not an oversight.
+
+\section{Reports}
+
+\begin{longtable}{@{}p{2.6cm}p{4.6cm}p{3.2cm}p{3.6cm}@{}}
+\toprule
+\textbf{Report} & \textbf{Purpose} & \textbf{Filters} & \textbf{Source} \\
+\midrule
+\endhead
+Overtime report & Per-employee total overtime hours for a department/
+  range. & Department, start/end date & \code{reports.overtime\_summary}
+  (via \route{/reports/overtime}) \\
+Hours trend & Per-day total worked hours for a department/range, shown
+  as a bar comparison. & Department, start/end date &
+  \code{reports.hours\_trend} (via \route{/reports/hours-trend}) \\
+Labor cost (department) & Aggregate labor cost total for a department/
+  range. & Department, start/end date & \code{labor\_cost.department\_
+  cost\_summary} (via \route{/labor-cost}) \\
+Labor cost (employee, admin only) & Full per-line-item cost breakdown
+  for one employee. & Employee (from URL), start/end date &
+  \longcode{labor\_cost.range\_cost\_for\_employee} (via
+  \route{/labor-cost/\allowbreak employees/<id>}) \\
+\bottomrule
+\end{longtable}
+
+All four are department- or employee-scoped and date-range-filtered;
+none loads an unbounded table (the routes clamp an excessively wide
+\route{?start=}/\route{?end=} range to 92 days --- see \S6.2, security
+threat model, for why).
+
+\section{Audit Log}
+
+Every privileged or sensitive action in the system --- login
+success/failure, pay rate changes, leave decisions, employee/department
+changes, shift publish/cancel, attendance corrections --- is recorded
+through exactly one function, \code{audit.record}, which stages (but
+never itself commits) an \code{AuditLog} row. Every call site is
+required to let its own primary-write commit cover the audit entry too,
+so a crash between two separate commits can never leave a state change
+persisted with no audit trail.
+
+The log is genuinely \textbf{append-only}: no route or service in the
+codebase ever issues an \code{UPDATE} or \code{DELETE} against
+\code{audit\_logs}. This is enforced by convention (there is no
+database-level trigger preventing it), not by a database permission ---
+\VERIFY{} whether the production database role used by the application
+has been further restricted at the PostgreSQL grant level to make this
+literally impossible rather than merely unused by the current code.
+
+\code{changes} is always a small, deliberately non-sensitive JSON
+summary (e.g.\ "a rate was set, for whom, effective when") --- never a
+raw dump of the sensitive value itself. A pay-rate change never records
+the rate; a leave decision never records the free-text
+\code{decision\_note} (which may contain a personal/medical
+circumstance).
+
+Only an admin may read the log (\route{/audit-log}, paginated 50 rows
+at a time, date-range filtered) or its lighter "Recent Activity"
+variant (\route{/recent-activity}, unpaginated but capped, with actor
+emails resolved for readability) --- enforced independently inside
+\code{audit.list\_entries} and \code{reports.recent\_activity}
+themselves, not just by the route decorator.

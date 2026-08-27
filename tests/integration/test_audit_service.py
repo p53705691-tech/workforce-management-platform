@@ -227,6 +227,92 @@ class TestOtherPrivilegedActionAuditing:
         assert cancelled_entry is not None
         assert cancelled_entry.entity_id == shift.id
 
+    def test_create_employee_records_an_audit_row(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, admin.id)
+
+        employee = employee_service.create_employee(
+            scope,
+            department_id=department.id,
+            employee_number="E-AUDIT-1",
+            first_name="Audit",
+            last_name="Test",
+            employment_status="active",
+            hired_on=date(2024, 1, 1),
+        )
+
+        entry = _last_entry(db_session, "employee_created")
+        assert entry is not None
+        assert entry.entity_id == employee.id
+        assert entry.actor_user_id == admin.id
+
+    def test_create_and_update_department_record_audit_rows(self, db_session):
+        org = make_organization(db_session)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, admin.id)
+
+        department = department_service.create_department(scope, name="Ops", code="OPS-AUDIT")
+
+        created_entry = _last_entry(db_session, "department_created")
+        assert created_entry is not None
+        assert created_entry.entity_id == department.id
+
+        department_service.update_department(scope, department.id, name="Renamed")
+
+        updated_entry = _last_entry(db_session, "department_updated")
+        assert updated_entry is not None
+        assert updated_entry.entity_id == department.id
+
+    def test_create_update_and_assign_shift_record_audit_rows(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        employee = make_employee(db_session, organization=org, department=department)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, admin.id)
+
+        shift = scheduling_service.create_shift(
+            scope,
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        )
+        created_entry = _last_entry(db_session, "shift_created")
+        assert created_entry is not None
+        assert created_entry.entity_id == shift.id
+
+        scheduling_service.update_shift(scope, shift.id, notes="Adjusted.")
+        updated_entry = _last_entry(db_session, "shift_updated")
+        assert updated_entry is not None
+        assert updated_entry.entity_id == shift.id
+
+        scheduling_service.assign_employee(scope, shift.id, employee.id)
+        assigned_entry = _last_entry(db_session, "shift_assigned")
+        assert assigned_entry is not None
+        assert assigned_entry.entity_id == shift.id
+        assert assigned_entry.changes["employee_id"] == employee.id
+
+    def test_request_leave_records_an_audit_row(self, db_session):
+        org = make_organization(db_session)
+        employee = make_employee(db_session, organization=org)
+        leave_type = make_leave_type(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, admin.id)
+
+        leave_request = leave_service.request_leave(
+            scope,
+            leave_type_id=leave_type.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            employee_id=employee.id,
+        )
+
+        entry = _last_entry(db_session, "leave_requested")
+        assert entry is not None
+        assert entry.entity_id == leave_request.id
+        assert entry.actor_user_id == admin.id
+
     def test_leave_approve_and_reject_record_audit_rows_without_the_decision_note(
         self, db_session
     ):
@@ -448,6 +534,37 @@ class TestListEntries:
         page = audit_service.list_entries(scope, far_past, far_past, page=1)
 
         assert all(entry.entity_id != employee.id for entry in page.entries)
+
+    def test_org_local_evening_event_is_included_in_the_default_today_window(
+        self, db_session
+    ):
+        """Bug: list_entries used to build its date-range bounds in UTC
+        even though the route's default range (and every displayed
+        timestamp) is the organization's own local date (rule A1). For
+        any organization behind UTC, an event late in the local evening
+        already falls on the *next* UTC calendar day and was silently
+        excluded from "today"'s default window.
+
+        ``created_at`` is a server-side ``func.now()`` default (real
+        wall-clock time, not something ``freeze_time`` can control), so
+        the boundary condition is reproduced by setting it directly on
+        the row after creation rather than by freezing the clock.
+        """
+        org = make_organization(db_session, timezone="Pacific/Honolulu")
+        employee = make_employee(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, admin.id)
+
+        employee_service.terminate_employee(scope, employee.id, date(2026, 6, 9))
+        entry = _last_entry(db_session, "employee_terminated")
+        # 2026-06-09 20:00 in Honolulu (UTC-10) is 2026-06-10 06:00 UTC --
+        # already the next UTC calendar day.
+        entry.created_at = datetime(2026, 6, 10, 6, 0, tzinfo=timezone.utc)
+        db_session.flush()
+
+        page = audit_service.list_entries(scope, date(2026, 6, 9), date(2026, 6, 9), page=1)
+
+        assert any(e.id == entry.id for e in page.entries)
 
     def test_pagination_reports_has_next_correctly(self, db_session):
         org = make_organization(db_session)

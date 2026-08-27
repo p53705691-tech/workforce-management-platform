@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}My Schedule — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>My Schedule</h1>
+      <p class="text-muted">When and where you're working — {{ shifts|length }} shift{{ "s" if shifts|length != 1 else "" }} between {{ start.strftime("%b %-d") }} and {{ end.strftime("%b %-d") }}.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  {# Employee-only: scheduling.list_shifts already restricts an employee
+     to their own published shifts (no drafts, no other employees) — see
+     that function's docstring. This page adds no filter beyond the
+     date range, unlike the Admin/Manager Schedule page, since an
+     employee has nothing to filter by. #}
+  <form method="get" class="filter-form">
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if end < start %}
+    <div class="state-card">
+      {{ icons.icon("alert-triangle") }}
+      <h4>Invalid date range</h4>
+      <p>The "To" date is before the "From" date — adjust the range above.</p>
+    </div>
+  {% elif shifts %}
+    <ul class="shift-list">
+      {% for shift in shifts %}
+        <li class="shift-item{{ ' shift-item--today' if shift.business_date == today else '' }}">
+          <div class="shift-item-date">
+            <span class="weekday">{{ shift.business_date.strftime("%a") }}</span>
+            {{ shift.business_date.strftime("%b %-d") }}
+          </div>
+          <div class="shift-item-time">{{ shift.starts_at | local_dt(tz) }} – {{ shift.ends_at | local_dt(tz) }}</div>
+          <div class="shift-item-hours text-muted">{{ "%.2fh"|format(shift_hours[shift.id]) }}</div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("calendar") }}
+      <h4>No shifts in this range</h4>
+      <p>You have no published shifts between {{ start.isoformat() }} and {{ end.isoformat() }}.</p>
+    </div>
+  {% endif %}
+{% endblock %}

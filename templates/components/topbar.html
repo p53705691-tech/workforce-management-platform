@@ -21,6 +21,12 @@
     </summary>
     <div class="user-menu-panel">
       <p class="user-menu-email text-muted">{{ current_user.email }}</p>
+      {% if current_user.role in ("admin", "manager") %}
+        {# An employee changes their password from My Profile (sidebar)
+           instead — this keeps each role at exactly one reachable place
+           to do this, never two. #}
+        <a href="{{ url_for('auth.account') }}" class="btn btn-secondary">Change password</a>
+      {% endif %}
       <form method="post" action="{{ url_for('auth.logout') }}" class="nav-logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-secondary">Log out</button>

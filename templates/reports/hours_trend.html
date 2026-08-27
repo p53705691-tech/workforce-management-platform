@@ -1,10 +1,18 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Hours trend — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Hours trend</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Hours trend</h1>
+      <p class="text-muted">Total worked hours by day for a selected department and date range</p>
+    </div>
+  </div>
+{% endblock %}
 
+{% block content %}
   <form method="get" class="filter-form">
     <label>Department
       <select name="department_id">
@@ -22,27 +30,66 @@
   </form>
 
   {% if department_id %}
-    {% if trend %}
-      <table>
-        <thead>
-          <tr><th>Date</th><th>Total worked hours</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for day in trend %}
-            <tr>
-              <td>{{ day.date }}</td>
-              <td>{{ "%.2f"|format(day.total_hours) }}</td>
-              <td>
-                <div class="hours-bar" style="width: {{ day.bar_width_percent }}%;"></div>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    {% if end < start %}
+      {# _date_range (app/services/reports.py) returns an empty list when
+         end < start, which would otherwise render as an indistinguishable
+         "no data" state — but the actual problem is the date range
+         itself, not an absence of hours. #}
+      <div class="state-card">
+        {{ icons.icon("alert-triangle") }}
+        <h4>Invalid date range</h4>
+        <p>The "To" date is before the "From" date — adjust the range above.</p>
+      </div>
+    {% elif trend %}
+      {# Same headline-number-first composition as Labor Cost and the
+         Overtime report — a real sum of what's already in `trend`, no
+         new query. #}
+      <div class="card">
+        <p class="report-total">{{ "%.2f"|format(trend | sum(attribute="total_hours")) }}h</p>
+        <p class="text-muted">Total worked hours, {{ start }} to {{ end }}</p>
+      </div>
+      <div class="row-actions">
+        <a class="btn btn-secondary" href="{{ url_for('dashboard.overtime_report', department_id=department_id, start=start.isoformat(), end=end.isoformat()) }}">View overtime</a>
+        <a class="btn btn-secondary" href="{{ url_for('labor_cost.department_totals', department_id=department_id, start=start.isoformat(), end=end.isoformat()) }}">View labor cost</a>
+      </div>
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Total worked hours</th></tr>
+          </thead>
+          <tbody>
+            {% for day in trend %}
+              <tr>
+                <td data-label="Date">{{ day.date }}</td>
+                <td data-label="Total worked hours">
+                  <div class="hours-bar-row">
+                    <span>{{ "%.2f"|format(day.total_hours) }}</span>
+                    <div class="hours-bar-track">
+                      {# bar_width_percent (server-computed, 0-100) bucketed
+                         to the nearest 5% — see the .hours-bar-w-* comment
+                         in components.css for why (the app's CSP blocks
+                         inline `style` attributes outright). #}
+                      <div class="hours-bar hours-bar-w-{{ (day.bar_width_percent / 5) | round | int * 5 }}"></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
-      <p>No data in this range.</p>
+      <div class="state-card">
+        {{ icons.icon("clock") }}
+        <h4>No hours data recorded</h4>
+        <p>No hours data recorded for the selected department and date range.</p>
+      </div>
     {% endif %}
   {% else %}
-    <p>Select a department to see its hours trend.</p>
+    <div class="state-card">
+      {{ icons.icon("building") }}
+      <h4>Select a department</h4>
+      <p>Choose a department above to see its hours trend.</p>
+    </div>
   {% endif %}
 {% endblock %}

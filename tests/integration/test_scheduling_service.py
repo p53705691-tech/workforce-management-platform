@@ -6,11 +6,14 @@ import pytest
 from werkzeug.exceptions import Forbidden, NotFound
 
 from app.auth.scope import AccessScope
+from app.services import departments as department_service
 from app.services import scheduling as scheduling_service
 from app.services.errors import ValidationError
 from tests.factories import (
     make_department,
     make_employee,
+    make_leave_request,
+    make_leave_type,
     make_organization,
     make_shift,
     make_user,
@@ -297,6 +300,149 @@ def test_publish_shift_sets_status_and_published_at(db_session):
     assert published.published_at is not None
 
 
+def test_create_shift_rejects_an_end_before_start_with_a_clear_message(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    with pytest.raises(ValidationError, match="End time must be after the start time"):
+        scheduling_service.create_shift(
+            _scope("admin", org.id, user_id=admin.id),
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_create_shift_rejects_a_break_at_least_as_long_as_the_shift(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    with pytest.raises(ValidationError, match="Break time cannot be"):
+        scheduling_service.create_shift(
+            _scope("admin", org.id, user_id=admin.id),
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            break_minutes=480,
+        )
+
+
+def test_create_shift_rejects_a_shift_longer_than_24_hours(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    with pytest.raises(ValidationError, match="cannot be longer than 24 hours"):
+        scheduling_service.create_shift(
+            _scope("admin", org.id, user_id=admin.id),
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 2, 9, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_create_shift_rejects_a_deactivated_department(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    scope = _scope("admin", org.id, user_id=admin.id)
+    department_service.deactivate_department(scope, department.id)
+
+    with pytest.raises(ValidationError):
+        scheduling_service.create_shift(
+            scope,
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_update_shift_allows_unrelated_edits_while_in_a_deactivated_department(
+    db_session,
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    scope = _scope("admin", org.id, user_id=admin.id)
+    shift = make_shift(
+        db_session, organization=org, department=department, created_by=admin,
+        starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="draft",
+    )
+    department_service.deactivate_department(scope, department.id)
+
+    updated = scheduling_service.update_shift(
+        scope, shift.id, department_id=department.id, notes="Updated."
+    )
+
+    assert updated.notes == "Updated."
+
+
+def test_create_shift_rejects_a_shift_over_approved_leave(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    leave_type = make_leave_type(db_session, organization=org)
+    make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type,
+        requested_by=admin, status="approved",
+        decided_by_user_id=admin.id, decided_at=datetime.now(timezone.utc),
+        starts_at=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 23, 59, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValidationError):
+        scheduling_service.create_shift(
+            _scope("admin", org.id, user_id=admin.id),
+            department_id=department.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            employee_id=employee.id,
+        )
+
+
+def test_publish_shift_rejects_a_draft_shift_over_leave_approved_after_creation(db_session):
+    """Data/business-logic finding: the leave-conflict check on the shift
+    side only ever runs at create/update/assign time, and the check on
+    the leave side (leave.conflicting_shifts_for) only looks at already-
+    *published* shifts — so a draft shift created before the employee's
+    leave was approved could previously slip past every earlier check
+    and still get published squarely on top of that approved leave.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    shift = make_shift(
+        db_session, organization=org, department=department, employee=employee,
+        created_by=admin,
+        starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="draft",
+    )
+    leave_type = make_leave_type(db_session, organization=org)
+    # Constructed directly (bypassing approve_leave's own conflict check,
+    # which only ever sees *published* shifts) purely to reach the state
+    # this draft shift's later publish must itself now refuse.
+    make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type,
+        requested_by=admin, status="approved",
+        decided_by_user_id=admin.id, decided_at=datetime.now(timezone.utc),
+        starts_at=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 23, 59, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValidationError):
+        scheduling_service.publish_shift(_scope("admin", org.id, user_id=admin.id), shift.id)
+
+    db_session.refresh(shift)
+    assert shift.status == "draft"
+
+
 def test_cancel_shift_sets_status_and_clears_published_at(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
@@ -514,3 +660,83 @@ def test_manager_cannot_view_coverage_for_an_unmanaged_department(db_session):
 
     with pytest.raises(Forbidden):
         scheduling_service.coverage_summary(scope, other_dept.id, date(2026, 1, 1))
+
+
+class TestListShiftsEmployeeFilter:
+    def test_admin_employee_filter_returns_only_that_employees_shifts(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        employee_a = make_employee(db_session, organization=org, department=department)
+        employee_b = make_employee(db_session, organization=org, department=department)
+        admin = make_user(db_session, organization=org, role="admin")
+        shift_a = make_shift(
+            db_session, organization=org, department=department, employee=employee_a,
+            created_by=admin, business_date=date(2024, 1, 1),
+        )
+        make_shift(
+            db_session, organization=org, department=department, employee=employee_b,
+            created_by=admin, business_date=date(2024, 1, 1),
+        )
+
+        results = scheduling_service.list_shifts(
+            _scope("admin", org.id), date(2024, 1, 1), date(2024, 1, 1),
+            employee_id=employee_a.id,
+        )
+
+        assert [shift.id for shift in results] == [shift_a.id]
+
+    def test_manager_employee_filter_composes_with_department_scoping(self, db_session):
+        org = make_organization(db_session)
+        managed = make_department(db_session, organization=org)
+        unmanaged = make_department(db_session, organization=org)
+        managed_employee = make_employee(db_session, organization=org, department=managed)
+        unmanaged_employee = make_employee(db_session, organization=org, department=unmanaged)
+        admin = make_user(db_session, organization=org, role="admin")
+        make_shift(
+            db_session, organization=org, department=managed, employee=managed_employee,
+            created_by=admin, business_date=date(2024, 1, 1),
+        )
+        make_shift(
+            db_session, organization=org, department=unmanaged, employee=unmanaged_employee,
+            created_by=admin, business_date=date(2024, 1, 1),
+        )
+        manager_scope = _scope(
+            "manager", org.id, department_ids=frozenset({managed.id})
+        )
+
+        # A manager passing an out-of-department employee id must get an
+        # empty intersection, never that employee's shifts.
+        results = scheduling_service.list_shifts(
+            manager_scope, date(2024, 1, 1), date(2024, 1, 1),
+            employee_id=unmanaged_employee.id,
+        )
+
+        assert results == []
+
+
+class TestScheduledHours:
+    def test_subtracts_break_minutes_from_the_duration(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        shift = make_shift(
+            db_session, organization=org, department=department, created_by=admin,
+            starts_at=datetime(2024, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2024, 1, 1, 17, 0, tzinfo=timezone.utc),
+            break_minutes=30,
+        )
+
+        assert scheduling_service.scheduled_hours(shift) == pytest.approx(7.5)
+
+    def test_zero_break_minutes_is_the_full_span(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        shift = make_shift(
+            db_session, organization=org, department=department, created_by=admin,
+            starts_at=datetime(2024, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+            break_minutes=0,
+        )
+
+        assert scheduling_service.scheduled_hours(shift) == pytest.approx(3.0)

@@ -48,6 +48,21 @@ def _parse_date(value: str | None, fallback: date) -> date:
         return fallback
 
 
+# Widest date range this list view will query in one request, same bound
+# (and same reasoning: an arbitrary, user-editable ?start=/&end= query
+# string) as app.routes.dashboard's identical constant/helper. Without
+# this, an authenticated admin/manager could request the organization's
+# entire attendance history in one request, instantiating a WTForms
+# CorrectEntryForm per returned row (security-review finding).
+_MAX_LIST_RANGE_DAYS = 92
+
+
+def _clamp_range(start: date, end: date) -> tuple[date, date]:
+    if (end - start).days > _MAX_LIST_RANGE_DAYS:
+        start = end - timedelta(days=_MAX_LIST_RANGE_DAYS)
+    return start, end
+
+
 @attendance_bp.route("", methods=["GET"])
 @login_required
 def list_entries():
@@ -55,45 +70,55 @@ def list_entries():
     default_start, default_end = _default_date_range(scope)
     start = _parse_date(request.args.get("start"), default_start)
     end = _parse_date(request.args.get("end"), default_end)
+    start, end = _clamp_range(start, end)
     employee_id = request.args.get("employee_id", type=int)
 
     can_manage = scope.role in ("admin", "manager")
-    entries = attendance_service.list_entries(
+    entries_context = report_service.attendance_entries_with_context(
         scope, start, end, employee_id=employee_id if can_manage else None
     )
 
     employee_names = {}
-    clock_out_forms = {}
+    employee_choices = []
     correct_forms = {}
 
     if can_manage:
         employees = employee_service.list_employees(scope)
         employee_names = {e.id: f"{e.first_name} {e.last_name}" for e in employees}
-        clock_in_form = AdminClockInForm()
-        clock_in_form.employee_id.choices = [(0, "Myself")] + [
-            (e.id, employee_names[e.id]) for e in employees
-        ]
-    else:
-        clock_in_form = ClockInForm()
+        employee_choices = sorted(employee_names.items(), key=lambda pair: pair[1])
+        for row in entries_context:
+            correct_forms[row["entry"].id] = CorrectEntryForm()
 
-    for entry in entries:
-        if entry.status != "closed":
-            clock_out_forms[entry.id] = (
-                AdminClockOutForm() if can_manage else ClockOutForm()
-            )
-        if can_manage:
-            correct_forms[entry.id] = CorrectEntryForm()
+    # The status card is never shown for can_manage (see the template), so
+    # this lookup only runs for a plain employee.
+    attendance_status = None if can_manage else report_service.current_attendance_status(scope)
+
+    can_clock_out = (
+        not can_manage
+        and bool(attendance_status)
+        and attendance_status["entry"].status == "open"
+    )
+    status_clock_out_form = ClockOutForm() if can_clock_out else None
+
+    # Employee gets a calmer, history-focused composition of the exact
+    # same scoped data (no separate query) — per MVP-1_version2.md §15:
+    # "show only the employee's own information," not the admin/manager
+    # management surface with correction/employee-filter controls.
+    template = "attendance/my_attendance.html" if scope.role == "employee" else "attendance/list.html"
 
     return render_template(
-        "attendance/list.html",
-        entries=entries,
+        template,
+        entries_context=entries_context,
         start=start,
         end=end,
         employee_names=employee_names,
+        employee_choices=employee_choices,
+        selected_employee_id=employee_id,
         can_manage=can_manage,
-        clock_in_form=clock_in_form,
-        clock_out_forms=clock_out_forms,
         correct_forms=correct_forms,
+        attendance_status=attendance_status,
+        status_clock_out_form=status_clock_out_form,
+        scheduled_hours=scheduling_service.scheduled_hours,
         tz=scheduling_service.organization_timezone(scope),
     )
 

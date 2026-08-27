@@ -102,6 +102,12 @@ from app.services.errors import ValidationError
 _SECONDS_PER_HOUR = Decimal(3600)
 _CENT = Decimal("0.01")
 
+# Widest a touched week's expansion (see range_cost_for_employee) can
+# reach beyond the requested [start_date, end_date] -- a week is 7 days,
+# whatever the policy's week_start_day turns out to be, so 6 days on
+# each side is always enough regardless of that setting.
+_WEEK_EXPANSION_PAD = timedelta(days=6)
+
 
 @dataclass(frozen=True)
 class DepartmentCostSummary:
@@ -163,9 +169,16 @@ def _make_line_item(
     )
 
 
-def _daily_breakdown(scope: AccessScope, employee_id: int, business_date: date):
+def _compute_daily_breakdown(
+    employee_id: int,
+    business_date: date,
+    worked_hours: Decimal,
+    rate: Decimal | None,
+    policy,
+):
     """(rate, resolved_policy, regular_hours, daily_ot_buckets) for one
-    employee on one day.
+    employee on one day, given the three DB-sourced values already
+    resolved by the caller — pure computation, no DB access of its own.
 
     Raises ``ValidationError`` naming what's missing if no pay rate or no
     overtime policy is configured for ``business_date`` — never silently
@@ -186,16 +199,6 @@ def _daily_breakdown(scope: AccessScope, employee_id: int, business_date: date):
     must not price line items from them, which is automatically true
     here since ``regular_hours`` is ``0`` and ``ot_buckets`` is empty.
     """
-    worked_seconds = working_hours_service.worked_seconds_for_day(
-        scope, employee_id, business_date
-    )
-    worked_hours = Decimal(worked_seconds) / _SECONDS_PER_HOUR
-
-    rate = pay_rate_service.resolve_pay_rate(
-        employee_id, scope.organization_id, business_date
-    )
-    policy = overtime_service.resolve_policy(scope.organization_id, business_date)
-
     if worked_hours == 0:
         return rate, policy, Decimal("0"), []
 
@@ -213,6 +216,30 @@ def _daily_breakdown(scope: AccessScope, employee_id: int, business_date: date):
         worked_hours, policy.daily_threshold_hours, policy.daily_tiers
     )
     return rate, policy, regular_hours, ot_buckets
+
+
+def _daily_breakdown(scope: AccessScope, employee_id: int, business_date: date):
+    """(rate, resolved_policy, regular_hours, daily_ot_buckets) for one
+    employee on one day — the single-day, DB-querying path used by
+    ``daily_cost_for_employee``.
+
+    ``range_cost_for_employee`` does *not* use this: it needs the same
+    three values for potentially many days at once (to expand a touched
+    week for correct weekly-OT computation), so it batches the
+    underlying queries itself and calls ``_compute_daily_breakdown``
+    directly — see that function for why, and
+    ``working_hours.worked_seconds_by_range``'s docstring for the N+1
+    problem this split avoids for that caller.
+    """
+    worked_seconds = working_hours_service.worked_seconds_for_day(
+        scope, employee_id, business_date
+    )
+    worked_hours = Decimal(worked_seconds) / _SECONDS_PER_HOUR
+    rate = pay_rate_service.resolve_pay_rate(
+        employee_id, scope.organization_id, business_date
+    )
+    policy = overtime_service.resolve_policy(scope.organization_id, business_date)
+    return _compute_daily_breakdown(employee_id, business_date, worked_hours, rate, policy)
 
 
 def _daily_line_items(
@@ -288,12 +315,41 @@ def range_cost_for_employee(
     if end_date < start_date:
         raise ValidationError("end_date must be on or after start_date.")
 
+    # A week's worth of expansion (below) can reach at most 6 days before
+    # ``start_date`` or after ``end_date`` (a week is 7 days, whatever
+    # ``week_start_day`` turns out to be) -- pre-fetching that whole
+    # padded window in three queries total, once, replaces what used to
+    # be three queries *per day* (worked hours, pay rate, overtime
+    # policy) fanning out across however many days a request touched.
+    # This is the fix for a measured ~2.2s admin dashboard load with
+    # just 12 employees / 4 departments -- see
+    # ``working_hours.worked_seconds_by_range``'s docstring for the full
+    # picture across all three batched lookups.
+    fetch_start = start_date - _WEEK_EXPANSION_PAD
+    fetch_end = end_date + _WEEK_EXPANSION_PAD
+    worked_seconds_by_date = working_hours_service.worked_seconds_by_range(
+        scope, employee_id, fetch_start, fetch_end
+    )
+    rate_by_date = pay_rate_service.resolve_pay_rates_by_range(
+        employee_id, scope.organization_id, fetch_start, fetch_end
+    )
+    policy_by_date = overtime_service.resolve_policies_by_range(
+        scope.organization_id, fetch_start, fetch_end
+    )
+
     breakdown_cache: dict[date, tuple] = {}
 
     def get_breakdown(business_date: date):
         if business_date not in breakdown_cache:
-            breakdown_cache[business_date] = _daily_breakdown(
-                scope, employee_id, business_date
+            worked_hours = (
+                Decimal(worked_seconds_by_date.get(business_date, 0)) / _SECONDS_PER_HOUR
+            )
+            breakdown_cache[business_date] = _compute_daily_breakdown(
+                employee_id,
+                business_date,
+                worked_hours,
+                rate_by_date.get(business_date),
+                policy_by_date.get(business_date),
             )
         return breakdown_cache[business_date]
 

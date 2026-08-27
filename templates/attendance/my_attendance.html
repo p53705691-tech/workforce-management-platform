@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Time & Attendance — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Time &amp; Attendance</h1>
+      <p class="text-muted">Your own attendance history — nothing here shows another employee's data.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  {# Primary check-in/out already lives on Home (ui-ux.md §18: one
+     unmistakable primary action, not repeated on every page) — this
+     page is history-focused, matching MVP-1_version2.md §15's example
+     exactly (Date / Scheduled / Worked / Status, nothing else). The
+     "needs review" state is the one exception worth a small banner
+     here too, since it directly explains a row the employee is looking
+     at. #}
+  {% if attendance_status and not status_clock_out_form %}
+    <div class="card summary-card card--attention">
+      <div class="status-card-body">
+        <div class="status-card-icon">{{ icons.icon("alert-triangle") }}</div>
+        <div>
+          <p class="status-card-label">Attendance Needs Review</p>
+          <p class="status-card-detail">
+            Your clock-in at {{ attendance_status.entry.started_at | local_dt(tz) }} was flagged for review.
+            An admin or manager needs to correct it before you can clock in or out again.
+          </p>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <form method="get" class="filter-form">
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if end < start %}
+    <div class="state-card">
+      {{ icons.icon("alert-triangle") }}
+      <h4>Invalid date range</h4>
+      <p>The "To" date is before the "From" date — adjust the range above.</p>
+    </div>
+  {% elif entries_context %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Scheduled</th><th>Worked</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in entries_context %}
+            {% set entry = row.entry %}
+            <tr class="{% if entry.status == 'needs_review' %}attendance-needs-review{% endif %}">
+              <td data-label="Date">{{ entry.business_date }}</td>
+              <td data-label="Scheduled">{{ "%.2fh"|format(scheduled_hours(row.shift)) if row.shift else "—" }}</td>
+              <td data-label="Worked">
+                {{ "%.2fh"|format(row.worked_hours) if row.worked_hours is not none else "—" }}
+                {% if row.late_minutes %}<span class="badge badge-warning">{{ row.late_minutes }}m late</span>{% endif %}
+              </td>
+              <td data-label="Status">{{ badges.status_badge(entry.status, {"open": "info", "closed": "success", "needs_review": "warning"}) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("calendar-off") }}
+      <h4>No attendance in this range</h4>
+      <p>Nothing was recorded between {{ start.isoformat() }} and {{ end.isoformat() }}.</p>
+    </div>
+  {% endif %}
+{% endblock %}

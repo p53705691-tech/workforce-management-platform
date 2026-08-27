@@ -1,129 +1,272 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Dashboard — Workforce Management Platform{% endblock %}
 
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Dashboard</h1>
+      <p class="text-muted">Live workforce overview for {{ today }}</p>
+    </div>
+    <div class="page-header-actions">
+      <form method="get" class="dashboard-filter">
+        <label>Department
+          <select name="department_id" data-autosubmit>
+            <option value="">All departments</option>
+            {% for department in departments %}
+              <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+                {{ department.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <noscript><button type="submit" class="btn btn-secondary">Filter</button></noscript>
+      </form>
+    </div>
+  </div>
+{% endblock %}
+
 {% block content %}
-  <h1>Dashboard</h1>
-  <p>Today: <strong>{{ today }}</strong></p>
+  {# The four "what's happening right now" headcounts — the page's
+     primary, most-glanceable numbers. Purely structural/derived figures
+     (department counts, coverage totals) live as a caption on the
+     Coverage card further down, not here, so this grid stays a genuine
+     headline rather than every number on the page competing for the
+     same visual weight. #}
+  {# who_is_working_today returns one row per published shift, not per
+     employee — an employee with two shifts the same day (a split
+     shift; the DB only forbids *overlapping* shifts) would otherwise
+     be counted twice. Dedupe by employee_id so this is a real
+     headcount, computed once here and reused below for its
+     percent-of-workforce caption. #}
+  {% set working_count = working_today | map(attribute="employee_id") | unique | list | length %}
+  <div class="metric-grid">
+    <div class="metric-cell">
+      <div class="m-icon">{{ icons.icon("users") }}</div>
+      <div class="m-label">Total Employees</div>
+      {# Same "active" definition scheduling.coverage_summary uses —
+         see app/routes/dashboard.py. #}
+      <div class="m-value">{{ total_employees }}</div>
+    </div>
+    <div class="metric-cell">
+      <div class="m-icon">{{ icons.icon("check-circle") }}</div>
+      <div class="m-label">Working Today</div>
+      <div class="m-value">{{ working_count }}</div>
+      {% if total_employees %}
+        <div class="m-delta">{{ (working_count / total_employees * 100) | round | int }}% of workforce</div>
+      {% endif %}
+    </div>
+    <div class="metric-cell">
+      <div class="m-icon">{{ icons.icon("user-x") }}</div>
+      <div class="m-label">Absent Today</div>
+      <div class="m-value">{{ absent_today|length }}</div>
+      {% if total_employees %}
+        <div class="m-delta{{ ' down' if absent_today }}">{{ (absent_today|length / total_employees * 100) | round | int }}% of workforce</div>
+      {% endif %}
+    </div>
+    <div class="metric-cell">
+      <div class="m-icon">{{ icons.icon("calendar-off") }}</div>
+      <div class="m-label">On Leave Today</div>
+      <div class="m-value">{{ on_leave_today|length }}</div>
+      {% if total_employees %}
+        <div class="m-delta">{{ (on_leave_today|length / total_employees * 100) | round | int }}% of workforce</div>
+      {% endif %}
+    </div>
+  </div>
 
-  <form method="get" class="filter-form">
-    <label>Department
-      <select name="department_id" onchange="this.form.submit()">
-        <option value="">All departments</option>
-        {% for department in departments %}
-          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
-            {{ department.name }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <noscript><button type="submit">Filter</button></noscript>
-  </form>
+  {# Operational problems tier (.claude/rules/ui-ux.md §8's dashboard
+     hierarchy: context -> key state -> metrics -> operational problems
+     -> detailed data). A read composition over already-verified services
+     (see app.services.reports.attendance_needing_review), not a new
+     metric. #}
+  {% set has_attention = needs_review_entries or unconfigured_employee_count %}
+  <div class="card summary-card{{ ' card--attention' if has_attention else '' }}">
+    <h2 class="card-title">{{ icons.icon("alert-triangle") }} Requiring Attention</h2>
+    {% if has_attention %}
+      <ul class="attention-list">
+        {% if needs_review_entries %}
+          <li>
+            <a href="{{ url_for('attendance.list_entries') }}">
+              {{ needs_review_entries|length }} attendance {{ "entry needs" if needs_review_entries|length == 1 else "entries need" }} review
+            </a>
+          </li>
+        {% endif %}
+        {% if unconfigured_employee_count %}
+          <li>
+            <a href="{{ url_for('labor_cost.department_totals') }}">
+              {{ unconfigured_employee_count }} employee{{ "s" if unconfigured_employee_count != 1 else "" }} missing pay-rate/policy configuration
+            </a>
+          </li>
+        {% endif %}
+      </ul>
+    {% else %}
+      <p class="all-clear">{{ icons.icon("check") }} Nothing needs attention right now.</p>
+    {% endif %}
+  </div>
 
-  <h2>Who is working today</h2>
-  {% if working_today %}
-    <table>
-      <thead>
-        <tr><th>Employee</th><th>Department</th><th>Starts</th><th>Ends</th></tr>
-      </thead>
-      <tbody>
-        {% for shift in working_today %}
-          <tr>
-            <td>{{ employee_names.get(shift.employee_id, "Unassigned") }}</td>
-            <td>{{ department_names.get(shift.department_id, "—") }}</td>
-            <td>{{ shift.starts_at | local_dt(tz) }}</td>
-            <td>{{ shift.ends_at | local_dt(tz) }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No one is scheduled to work today.</p>
-  {% endif %}
+  {# Detailed workforce data: four compact, contextually grouped
+     operational sections (ui-ux.md §10: cards are appropriate here,
+     it's exactly "distinct operational sections"), arranged two-up on
+     desktop instead of stacked full-width — each of these tables is
+     narrow (2-4 columns), so a single-column layout was mostly unused
+     whitespace to the right of every table. #}
+  <div class="dashboard-grid">
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("check-circle") }} Working Today</h3>
+      {% if working_today %}
+        <div class="table-wrap table-cards-mobile">
+          <table>
+            <thead>
+              <tr><th>Employee</th><th>Department</th><th>Starts</th><th>Ends</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {% for shift in working_today %}
+                <tr>
+                  <td data-label="Employee">{{ employee_names.get(shift.employee_id, "Unassigned") }}</td>
+                  <td data-label="Department">{{ department_names.get(shift.department_id, "—") }}</td>
+                  <td data-label="Starts">{{ shift.starts_at | local_dt(tz) }}</td>
+                  <td data-label="Ends">{{ shift.ends_at | local_dt(tz) }}</td>
+                  <td data-label="Status"><span class="badge badge-success">Working</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("calendar-off") }}
+          <h4>No one scheduled today</h4>
+          <p>Nobody is scheduled to work for the selected department today.</p>
+        </div>
+      {% endif %}
+    </div>
 
-  <h2>Who is absent today</h2>
-  {% if absent_today %}
-    <table>
-      <thead>
-        <tr><th>Employee</th><th>Department</th></tr>
-      </thead>
-      <tbody>
-        {% for employee in absent_today %}
-          <tr>
-            <td>{{ employee.first_name }} {{ employee.last_name }}</td>
-            <td>{{ department_names.get(employee.department_id, "—") }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No unexplained absences today.</p>
-  {% endif %}
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("user-x") }} Absent Today</h3>
+      {% if absent_today %}
+        <div class="table-wrap table-cards-mobile">
+          <table>
+            <thead>
+              <tr><th>Employee</th><th>Department</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {% for employee in absent_today %}
+                <tr>
+                  <td data-label="Employee">{{ employee.first_name }} {{ employee.last_name }}</td>
+                  <td data-label="Department">{{ department_names.get(employee.department_id, "—") }}</td>
+                  <td data-label="Status"><span class="badge badge-danger">Absent</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("check-circle") }}
+          <h4>No unexplained absences</h4>
+          <p>Every scheduled employee for the selected department is accounted for today.</p>
+        </div>
+      {% endif %}
+    </div>
 
-  <h2>Who is on leave today</h2>
-  {% if on_leave_today %}
-    <table>
-      <thead>
-        <tr><th>Employee</th><th>From</th><th>To</th></tr>
-      </thead>
-      <tbody>
-        {% for leave_request in on_leave_today %}
-          <tr>
-            <td>{{ employee_names.get(leave_request.employee_id, "—") }}</td>
-            <td>{{ leave_request.starts_at | local_dt(tz) }}</td>
-            <td>{{ leave_request.ends_at | local_dt(tz) }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No one is on approved leave today.</p>
-  {% endif %}
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("calendar-off") }} On Leave Today</h3>
+      {% if on_leave_today %}
+        <div class="table-wrap table-cards-mobile">
+          <table>
+            <thead>
+              <tr><th>Employee</th><th>From</th><th>To</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {% for leave_request in on_leave_today %}
+                <tr>
+                  <td data-label="Employee">{{ employee_names.get(leave_request.employee_id, "—") }}</td>
+                  <td data-label="From">{{ leave_request.starts_at | local_dt(tz) }}</td>
+                  <td data-label="To">{{ leave_request.ends_at | local_dt(tz) }}</td>
+                  <td data-label="Status"><span class="badge badge-info">On Leave</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("calendar-off") }}
+          <h4>No one is on leave</h4>
+          <p>No approved leave covers today for the selected department.</p>
+        </div>
+      {% endif %}
+    </div>
 
-  <h2>Coverage today</h2>
-  {% if coverage %}
-    <table>
-      <thead>
-        <tr><th>Department</th><th>Published shifts</th><th>Active employees</th></tr>
-      </thead>
-      <tbody>
-        {% for dept_id, summary in coverage.items() %}
-          <tr>
-            <td>{{ department_names.get(dept_id, "—") }}</td>
-            <td>{{ summary.published_shifts }}</td>
-            <td>{{ summary.active_employees }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No department to show coverage for.</p>
-  {% endif %}
+    <div class="card">
+      <h3 class="card-title">{{ icons.icon("building") }} Coverage Today</h3>
+      {% set active_in_shown = coverage.values() | sum(attribute="active_employees") %}
+      <p class="text-muted card-caption">
+        {{ coverage|length }} department{{ "s" if coverage|length != 1 else "" }} shown ·
+        {{ active_in_shown }} active employee{{ "s" if active_in_shown != 1 else "" }} across them
+      </p>
+      {% if coverage %}
+        <div class="table-wrap table-cards-mobile">
+          <table>
+            <thead>
+              <tr><th>Department</th><th>Published shifts</th><th>Active employees</th></tr>
+            </thead>
+            <tbody>
+              {% for dept_id, summary in coverage.items() %}
+                <tr>
+                  <td data-label="Department">{{ department_names.get(dept_id, "—") }}</td>
+                  <td data-label="Published shifts">{{ summary.published_shifts }}</td>
+                  <td data-label="Active employees">{{ summary.active_employees }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="state-card">
+          {{ icons.icon("building") }}
+          <h4>No coverage to show</h4>
+          <p>No department matches the selected filter.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
 
   {# Rule A4: department totals only, never a per-employee figure or an
-     hourly rate — same boundary as app.routes.labor_cost. #}
-  <h2>Labor cost ({{ cost_start }} to {{ cost_end }})</h2>
-  {% if cost_totals %}
-    <table>
-      <thead>
-        <tr><th>Department</th><th>Total</th><th>Configuration gaps</th></tr>
-      </thead>
-      <tbody>
-        {% for dept_id, summary in cost_totals.items() %}
-          <tr>
-            <td>{{ department_names.get(dept_id, "—") }}</td>
-            <td>{% if summary is not none %}{{ "%.2f"|format(summary.total) }}{% else %}—{% endif %}</td>
-            <td>
-              {% if summary is not none and summary.unconfigured_employee_count %}
-                {{ summary.unconfigured_employee_count }} employee{{ "s" if summary.unconfigured_employee_count != 1 else "" }}
-                missing rate/policy configuration
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No department to show labor cost for.</p>
-  {% endif %}
+     hourly rate — same boundary as app.routes.labor_cost. Full width:
+     the financial figure on this page, given its own visual weight
+     rather than sharing a half-width column with a headcount table. #}
+  <div class="card summary-card">
+    <h2 class="card-title">{{ icons.icon("coins") }} Labor Cost ({{ cost_start }} to {{ cost_end }})</h2>
+    {% if cost_totals %}
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Department</th><th>Total</th><th>Configuration gaps</th></tr>
+          </thead>
+          <tbody>
+            {% for dept_id, summary in cost_totals.items() %}
+              <tr>
+                <td data-label="Department">{{ department_names.get(dept_id, "—") }}</td>
+                <td data-label="Total">{% if summary is not none %}{{ "%.2f"|format(summary.total) }}{% else %}—{% endif %}</td>
+                <td data-label="Configuration gaps">
+                  {% if summary is not none and summary.unconfigured_employee_count %}
+                    {{ summary.unconfigured_employee_count }} employee{{ "s" if summary.unconfigured_employee_count != 1 else "" }}
+                    missing rate/policy configuration
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("coins") }}
+        <h4>No labor cost to show</h4>
+        <p>No department matches the selected filter for this cost period.</p>
+      </div>
+    {% endif %}
+  </div>
 {% endblock %}

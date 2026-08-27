@@ -1,10 +1,17 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Audit Log — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Audit log</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Audit log</h1>
+    </div>
+  </div>
+{% endblock %}
 
+{% block content %}
   <form method="get" class="date-range-form">
     <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
     <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
@@ -12,30 +19,32 @@
   </form>
 
   {% if entries %}
-    <table>
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>Action</th>
-          <th>Entity</th>
-          <th>Actor user id</th>
-          <th>IP address</th>
-          <th>Details</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in entries %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
           <tr>
-            <td>{{ entry.created_at | local_dt(tz) }}</td>
-            <td>{{ entry.action }}</td>
-            <td>{{ entry.entity_type }}{% if entry.entity_id %} #{{ entry.entity_id }}{% endif %}</td>
-            <td>{{ entry.actor_user_id or "—" }}</td>
-            <td>{{ entry.ip_address or "—" }}</td>
-            <td>{{ entry.changes or "—" }}</td>
+            <th>When</th>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Actor user id</th>
+            <th>IP address</th>
+            <th>Details</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for entry in entries %}
+            <tr>
+              <td data-label="When">{{ entry.created_at | local_dt(tz) }}</td>
+              <td data-label="Action">{{ entry.action }}</td>
+              <td data-label="Entity">{{ entry.entity_type }}{% if entry.entity_id %} #{{ entry.entity_id }}{% endif %}</td>
+              <td data-label="Actor user id">{{ entry.actor_user_id or "—" }}</td>
+              <td data-label="IP address">{{ entry.ip_address or "—" }}</td>
+              <td data-label="Details">{{ entry.changes or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
 
     <p class="pagination">
       {% if page > 1 %}
@@ -46,6 +55,10 @@
       {% endif %}
     </p>
   {% else %}
-    <p>No audit events in this range.</p>
+    <div class="state-card">
+      {{ icons.icon("activity") }}
+      <h4>No audit events in this range</h4>
+      <p>No audit events were recorded between {{ start.isoformat() }} and {{ end.isoformat() }}.</p>
+    </div>
   {% endif %}
 {% endblock %}

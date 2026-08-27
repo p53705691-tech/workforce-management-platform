@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from freezegun import freeze_time
 
 from app.auth.scope import AccessScope
 from app.models.department_manager import DepartmentManager
@@ -93,6 +94,7 @@ def _published_shift(db_session, org, department, employee, created_by, business
     )
 
 
+@freeze_time("2026-01-15 12:00:00")
 def test_admin_dashboard_shows_org_wide_data(client, db_session):
     org = make_organization(db_session)
     dept_a = make_department(db_session, organization=org)
@@ -116,6 +118,7 @@ def test_admin_dashboard_shows_org_wide_data(client, db_session):
     assert b"Bob Brown" in response.data
 
 
+@freeze_time("2026-01-15 12:00:00")
 def test_manager_dashboard_is_scoped_to_their_own_departments(client, db_session):
     org = make_organization(db_session)
     managed_dept = make_department(db_session, organization=org)
@@ -183,6 +186,144 @@ def test_employee_dashboard_shows_only_their_own_data(client, db_session):
     )
     assert own_shift.starts_at.astimezone(org_tz).strftime("%H:%M") in body
     assert other_shift.starts_at.astimezone(org_tz).strftime("%H:%M") not in body
+
+
+def test_employee_dashboard_shows_clock_in_when_not_working(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b"Not Clocked In" in response.data
+    assert b'action="/attendance/clock-in"' in response.data
+    assert b"Clock In" in response.data
+    assert b"Clock Out" not in response.data
+
+
+def test_employee_dashboard_shows_clock_out_when_working(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9),
+        ended_at=None, business_date=today, status="open",
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b"Currently Working" in response.data
+    assert f'action="/attendance/{entry.id}/clock-out"'.encode() in response.data
+    assert b"Clock Out" in response.data
+    assert b"Clock In</button>" not in response.data
+
+
+def test_employee_dashboard_shows_todays_shift_while_clocked_in(client, db_session):
+    """Regression test: today's shift used to be shown only in the "Not
+    Clocked In" state, disappearing the moment the employee clocked in
+    — the MVP-1_version2.md Employee Home hierarchy expects it visible
+    regardless of clock status.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    shift_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9)
+    make_shift(
+        db_session, organization=org, department=department, employee=employee,
+        created_by=admin, business_date=today,
+        starts_at=shift_start, ends_at=shift_start + timedelta(hours=8),
+        status="published", published_at=datetime.now(timezone.utc),
+    )
+    make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=shift_start, ended_at=None, business_date=today, status="open",
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/dashboard")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Currently Working" in body
+    assert "Today's shift" in body
+
+
+def test_employee_dashboard_shows_worked_today_metric(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    day_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9)
+    make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=day_start, ended_at=day_start + timedelta(hours=4),
+        business_date=today, status="closed",
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/dashboard")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Worked Today" in body
+    assert "4.00" in body
+
+
+def test_employee_dashboard_shows_needs_review_state_with_no_action_buttons(client, db_session):
+    # A needs_review entry blocks both clock-in (DB open-entry uniqueness
+    # constraint) and a plain clock-out (attendance.clock_out rejects it
+    # — only an admin/manager correction resolves one). Neither button
+    # may be offered; offering one would be a dead end.
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9),
+        ended_at=None, business_date=today, status="needs_review",
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b"Attendance Needs Review" in response.data
+    assert b"Clock In</button>" not in response.data
+    assert b"Clock Out</button>" not in response.data
+
+
+def test_employee_dashboard_clock_in_button_actually_clocks_in(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    dashboard = client.get("/dashboard")
+    csrf = dashboard.data.decode().split('name="csrf_token" value="')[1].split('"')[0]
+
+    response = client.post("/attendance/clock-in", data={"csrf_token": csrf})
+
+    assert response.status_code == 302
+    follow_up = client.get("/dashboard")
+    assert b"Currently Working" in follow_up.data
 
 
 def test_manager_never_sees_pay_rate_or_per_employee_cost_on_dashboard(client, db_session):
@@ -261,6 +402,89 @@ def test_manager_never_sees_pay_rate_or_cost_on_overtime_report(client, db_sessi
     assert "550.00" not in body  # combined per-employee total
 
 
+def test_overtime_report_shows_total_and_cross_nav_links(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    ot_employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _default_policy(db_session, org)
+    make_pay_rate(
+        db_session, organization=org, employee=ot_employee,
+        hourly_rate=Decimal("50.0000"), effective_from=date(2020, 1, 1),
+    )
+    today = _today_for(org)
+    started_at = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9)
+    make_attendance_entry(
+        db_session, organization=org, employee=ot_employee, created_by=admin,
+        started_at=started_at, ended_at=started_at + timedelta(hours=10),
+        business_date=today, status="closed",
+    )
+    _login(client, admin)
+
+    response = client.get(
+        f"/reports/overtime?department_id={department.id}&start={today.isoformat()}&end={today.isoformat()}"
+    )
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Total overtime" in body
+    assert "configured employees only" in body
+    assert f"/reports/hours-trend?department_id={department.id}" in body
+    assert f"/labor-cost?department_id={department.id}" in body
+
+
+def test_clamp_range_bounds_an_excessively_wide_range():
+    """Regression test: an arbitrary, user-editable ?start=/&end= used to
+    be passed straight into hours_trend's/overtime_summary's
+    per-employee, per-day query loop with no upper bound, making a very
+    wide range (e.g. a century) a routine, unauthenticated-effort way to
+    hang a worker process.
+    """
+    from app.routes.dashboard import _MAX_REPORT_RANGE_DAYS, _clamp_range
+
+    start, end = _clamp_range(date(1900, 1, 1), date(2100, 1, 1))
+
+    assert (end - start).days == _MAX_REPORT_RANGE_DAYS
+    assert end == date(2100, 1, 1)
+
+
+def test_hours_trend_report_returns_200_for_an_excessively_wide_date_range(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get(
+        f"/reports/hours-trend?department_id={department.id}&start=1900-01-01&end=2100-01-01"
+    )
+
+    assert response.status_code == 200
+
+
+def test_overtime_report_shows_invalid_range_state_for_a_reversed_date_range(
+    client, db_session
+):
+    """QA finding: a reversed range used to render every employee as
+    "Not configured" instead of flagging the actual problem (the date
+    range itself).
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get(
+        f"/reports/overtime?department_id={department.id}&start=2026-08-20&end=2026-08-01"
+    )
+    body = response.data.decode()
+
+    assert response.status_code == 200
+    assert "Invalid date range" in body
+    assert "Not configured" not in body
+
+
 def test_dashboard_returns_200_with_no_pay_rate_or_policy_configured(client, db_session):
     """Round C testing gap: the dashboard's department cost totals go
     through the same isolating app.services.labor_cost.department_cost_summary
@@ -312,7 +536,7 @@ def test_overtime_report_returns_200_with_no_pay_rate_or_policy_configured(
     )
 
     assert response.status_code == 200
-    assert b"Not available (no pay rate or overtime policy configured)" in response.data
+    assert b"Not configured" in response.data
 
 
 def test_manager_cannot_reach_a_department_they_do_not_manage(client, db_session):
@@ -327,6 +551,34 @@ def test_manager_cannot_reach_a_department_they_do_not_manage(client, db_session
     assert response.status_code == 404
 
 
+def test_manager_cannot_reach_hours_trend_for_a_department_they_do_not_manage(
+    client, db_session
+):
+    org = make_organization(db_session)
+    managed_dept = make_department(db_session, organization=org)
+    other_dept = make_department(db_session, organization=org)
+    manager = _make_manager(db_session, org, managed_dept)
+    _login(client, manager)
+
+    response = client.get(f"/reports/hours-trend?department_id={other_dept.id}")
+
+    assert response.status_code == 404
+
+
+def test_manager_cannot_reach_labor_cost_for_a_department_they_do_not_manage(
+    client, db_session
+):
+    org = make_organization(db_session)
+    managed_dept = make_department(db_session, organization=org)
+    other_dept = make_department(db_session, organization=org)
+    manager = _make_manager(db_session, org, managed_dept)
+    _login(client, manager)
+
+    response = client.get(f"/labor-cost?department_id={other_dept.id}")
+
+    assert response.status_code == 404
+
+
 def test_employee_role_cannot_reach_reports(client, db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
@@ -336,3 +588,80 @@ def test_employee_role_cannot_reach_reports(client, db_session):
 
     assert client.get("/reports/overtime").status_code == 403
     assert client.get("/reports/hours-trend").status_code == 403
+
+
+def test_requiring_attention_lists_a_needs_review_attendance_entry(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc),
+        ended_at=None, business_date=today, status="needs_review",
+    )
+    _login(client, admin)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b"attendance entry needs review" in response.data
+    assert b"card--attention" in response.data
+
+
+def test_requiring_attention_shows_all_clear_when_nothing_needs_it(client, db_session):
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert b"Nothing needs attention right now." in response.data
+    assert b"card--attention" not in response.data
+
+
+def test_employee_can_view_my_hours(client, db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    today = _today_for(org)
+    make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=9),
+        ended_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=13),
+        business_date=today, status="closed",
+    )
+    user = _make_employee_user(db_session, org, employee)
+    _login(client, user)
+
+    response = client.get("/my-hours")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "My Hours" in body
+    assert "4.00" in body
+    # Never a rate or cost figure, even for the caller's own record.
+    assert "$" not in body
+
+
+def test_admin_cannot_reach_my_hours(client, db_session):
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    _login(client, admin)
+
+    response = client.get("/my-hours")
+
+    assert response.status_code == 403
+
+
+def test_manager_cannot_reach_my_hours(client, db_session):
+    org = make_organization(db_session)
+    manager = _make_manager(db_session, org)
+    _login(client, manager)
+
+    response = client.get("/my-hours")
+
+    assert response.status_code == 403

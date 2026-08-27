@@ -10,6 +10,7 @@ M2 for the precedent).
 """
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from flask import abort
@@ -37,6 +38,16 @@ _UPDATABLE_FIELDS = {"department_id", "starts_at", "ends_at", "break_minutes", "
 # that slips past the service's best-effort pre-check still surfaces as a
 # clean ValidationError instead of a raw 500.
 _OVERLAP_EXCLUSION_CONSTRAINT = "ex_shifts_employee_no_overlap"
+
+# Names of the DB's other data-integrity guarantees for shifts (see
+# migration 0008_create_shifts and app.models.shift's naming convention:
+# every CheckConstraint is prefixed ck_<table>_ automatically). Matched
+# the same way as the overlap constraint above so these also surface as
+# a clean, actionable ValidationError instead of the route layer's
+# generic "a value conflicts with an existing record" fallback.
+_ENDS_AFTER_STARTS_CHECK = "ck_shifts_ends_after_starts"
+_BREAK_LESS_THAN_DURATION_CHECK = "ck_shifts_break_minutes_less_than_duration"
+_DURATION_MAX_24_HOURS_CHECK = "ck_shifts_duration_max_24_hours"
 
 
 def organization_timezone(scope: AccessScope) -> ZoneInfo:
@@ -78,12 +89,21 @@ def business_date_for(starts_at: datetime, tz: ZoneInfo) -> date:
     return starts_at.astimezone(tz).date()
 
 
-def _validate_department_for_write(scope: AccessScope, department_id: int) -> None:
+def _validate_department_for_write(
+    scope: AccessScope, department_id: int, require_active: bool = False
+) -> None:
     """Confirm ``department_id`` exists in scope and the caller may write to it.
 
     Unlike a lookup on an existing row, there is nothing here for
     ``get_scoped_or_404`` to scope a query against, so the manager
     department-membership check is done explicitly against ``scope``.
+
+    ``require_active`` additionally rejects a deactivated department —
+    used only when a shift is newly being placed there (creation, or a
+    genuine reassignment in ``update_shift``), never for an unrelated
+    edit that resubmits a shift's *existing*, already-inactive
+    department unchanged — same precedent as
+    ``app.services.employees._validate_department``.
     """
     if scope.role not in ("admin", "manager"):
         abort(403)
@@ -96,7 +116,7 @@ def _validate_department_for_write(scope: AccessScope, department_id: int) -> No
         )
         .first()
     )
-    if department is None:
+    if department is None or (require_active and not department.is_active):
         raise ValidationError(
             "Selected department does not exist in this organization.",
             field="department_id",
@@ -144,6 +164,22 @@ def _validate_employee_assignable(scope: AccessScope, employee_id: int) -> Emplo
             field="employee_id",
         )
     return employee
+
+
+def _validate_ends_after_starts(starts_at: datetime, ends_at: datetime) -> None:
+    """Reject a non-positive shift duration before it ever reaches the
+    DB's own ``ck_shifts_ends_after_starts`` CHECK.
+
+    Checked explicitly (not left to the DB constraint alone) because with
+    the default ``break_minutes=0``, ``ck_shifts_break_minutes_less_than_
+    duration`` evaluates first for this exact case (``0 < a negative
+    number`` is false) and reports a confusing "break too long" message
+    for what is actually an end-before-start mistake.
+    """
+    if ends_at <= starts_at:
+        raise ValidationError(
+            "End time must be after the start time.", field="ends_at"
+        )
 
 
 def _check_overlap(
@@ -195,25 +231,58 @@ def _check_leave_conflict(
         )
 
 
-def _commit_or_raise_overlap() -> None:
-    """Commit the session, translating an overlap-constraint violation.
+def _translate_shift_integrity_error(error: IntegrityError):
+    """Map a shift-table constraint violation to a clean ``ValidationError``.
 
-    Any other ``IntegrityError`` is re-raised unchanged for the caller
-    (route layer) to handle.
+    Shared by ``_flush_or_raise_overlap``/``_commit_or_raise_overlap``
+    below (flush needed when a caller must stage an audit entry — see
+    ``app.services.audit``'s module docstring — before the one commit
+    that covers both). Any other ``IntegrityError`` is re-raised
+    unchanged for the caller (route layer) to handle.
     """
+    constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+    if constraint_name == _OVERLAP_EXCLUSION_CONSTRAINT:
+        raise ValidationError(
+            "This employee already has an overlapping shift.",
+            field="employee_id",
+        ) from error
+    if constraint_name == _ENDS_AFTER_STARTS_CHECK:
+        raise ValidationError(
+            "End time must be after the start time.", field="ends_at"
+        ) from error
+    if constraint_name == _BREAK_LESS_THAN_DURATION_CHECK:
+        raise ValidationError(
+            "Break time cannot be equal to or longer than the shift itself.",
+            field="break_minutes",
+        ) from error
+    if constraint_name == _DURATION_MAX_24_HOURS_CHECK:
+        raise ValidationError(
+            "A shift cannot be longer than 24 hours.", field="ends_at"
+        ) from error
+    raise error
+
+
+def _flush_or_raise_overlap() -> None:
+    """Flush the session, translating a shift constraint violation.
+
+    A flush is enough to trigger these (all non-deferred) constraint
+    checks without committing, so a caller that still needs to stage an
+    audit entry afterward can do so and cover both in one final commit.
+    """
+    try:
+        db.session.flush()
+    except IntegrityError as error:
+        db.session.rollback()
+        _translate_shift_integrity_error(error)
+
+
+def _commit_or_raise_overlap() -> None:
+    """Commit the session, translating a shift constraint violation."""
     try:
         db.session.commit()
     except IntegrityError as error:
         db.session.rollback()
-        constraint_name = getattr(
-            getattr(error.orig, "diag", None), "constraint_name", None
-        )
-        if constraint_name == _OVERLAP_EXCLUSION_CONSTRAINT:
-            raise ValidationError(
-                "This employee already has an overlapping shift.",
-                field="employee_id",
-            ) from error
-        raise
+        _translate_shift_integrity_error(error)
 
 
 def _get_shift_for_write(scope: AccessScope, shift_id: int) -> Shift:
@@ -227,7 +296,11 @@ def _get_shift_for_write(scope: AccessScope, shift_id: int) -> Shift:
 
 
 def list_shifts(
-    scope: AccessScope, start: date, end: date, department_id: int | None = None
+    scope: AccessScope,
+    start: date,
+    end: date,
+    department_id: int | None = None,
+    employee_id: int | None = None,
 ) -> list[Shift]:
     """List shifts visible to ``scope`` with ``business_date`` in [start, end].
 
@@ -235,6 +308,12 @@ def list_shifts(
     departments they manage. Employee: only their own published shifts —
     an unpublished draft is still subject to change and a cancelled shift
     is no longer relevant, so neither is shown on an employee's schedule.
+
+    ``employee_id`` (admin/manager only) is an additional equality
+    filter applied after the role-based scoping above — same composition
+    order as ``attendance.list_entries``'s identical parameter, so a
+    manager passing an out-of-department employee id gets an empty
+    intersection, never a leak.
     """
     if scope.role == "employee":
         if scope.employee_id is None:
@@ -257,6 +336,8 @@ def list_shifts(
         query = query.filter(Shift.department_id.in_(scope.department_ids))
     if department_id is not None:
         query = query.filter(Shift.department_id == department_id)
+    if employee_id is not None:
+        query = query.filter(Shift.employee_id == employee_id)
     return query.order_by(Shift.starts_at).all()
 
 
@@ -270,11 +351,12 @@ def create_shift(
     notes: str | None = None,
 ) -> Shift:
     """Create a draft shift. Admin, or manager restricted to own departments."""
-    _validate_department_for_write(scope, department_id)
+    _validate_department_for_write(scope, department_id, require_active=True)
 
     tz = organization_timezone(scope)
     starts_at = _localize(starts_at, tz)
     ends_at = _localize(ends_at, tz)
+    _validate_ends_after_starts(starts_at, ends_at)
 
     if employee_id is not None:
         _validate_employee_assignable(scope, employee_id)
@@ -294,7 +376,18 @@ def create_shift(
         created_by_user_id=scope.user_id,
     )
     db.session.add(shift)
-    _commit_or_raise_overlap()
+    _flush_or_raise_overlap()
+    audit_service.record(
+        "shift_created",
+        "shift",
+        entity_id=shift.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": shift.employee_id, "department_id": shift.department_id},
+    )
+    # One commit covers both the creation and the audit entry above —
+    # see app.services.audit's module docstring.
+    db.session.commit()
     return shift
 
 
@@ -318,7 +411,10 @@ def update_shift(scope: AccessScope, shift_id: int, **fields) -> Shift:
         raise ValidationError(f"Unknown field(s): {', '.join(sorted(unknown_fields))}")
 
     if "department_id" in fields:
-        _validate_department_for_write(scope, fields["department_id"])
+        is_reassignment = fields["department_id"] != shift.department_id
+        _validate_department_for_write(
+            scope, fields["department_id"], require_active=is_reassignment
+        )
 
     times_changed = "starts_at" in fields or "ends_at" in fields
     tz = organization_timezone(scope) if times_changed else None
@@ -329,6 +425,7 @@ def update_shift(scope: AccessScope, shift_id: int, **fields) -> Shift:
             fields["ends_at"] = _localize(fields["ends_at"], tz)
         new_starts_at = fields.get("starts_at", shift.starts_at)
         new_ends_at = fields.get("ends_at", shift.ends_at)
+        _validate_ends_after_starts(new_starts_at, new_ends_at)
         if shift.employee_id is not None:
             _check_overlap(
                 scope,
@@ -345,7 +442,18 @@ def update_shift(scope: AccessScope, shift_id: int, **fields) -> Shift:
     if times_changed:
         shift.business_date = business_date_for(shift.starts_at, tz)
 
-    _commit_or_raise_overlap()
+    _flush_or_raise_overlap()
+    audit_service.record(
+        "shift_updated",
+        "shift",
+        entity_id=shift.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"fields_changed": sorted(fields)},
+    )
+    # One commit covers both the update and the audit entry above — see
+    # app.services.audit's module docstring.
+    db.session.commit()
     return shift
 
 
@@ -368,8 +476,20 @@ def assign_employee(scope: AccessScope, shift_id: int, employee_id: int) -> Shif
     )
     _check_leave_conflict(scope, employee_id, shift.starts_at, shift.ends_at)
 
+    previous_employee_id = shift.employee_id
     shift.employee_id = employee_id
-    _commit_or_raise_overlap()
+    _flush_or_raise_overlap()
+    audit_service.record(
+        "shift_assigned",
+        "shift",
+        entity_id=shift.id,
+        organization_id=scope.organization_id,
+        actor_user_id=scope.user_id,
+        changes={"employee_id": employee_id, "previous_employee_id": previous_employee_id},
+    )
+    # One commit covers both the assignment and the audit entry above —
+    # see app.services.audit's module docstring.
+    db.session.commit()
     return shift
 
 
@@ -380,6 +500,13 @@ def publish_shift(scope: AccessScope, shift_id: int) -> Shift:
     coverage-planning purposes (see ``coverage_summary``); it cannot be
     published, since "published" means a committed, employee-facing
     schedule entry.
+
+    Also re-checks the leave conflict at publish time, not only at
+    create/update/assign time: those checks only ever look at *published*
+    shifts on the leave side (``leave.conflicting_shifts_for``), so a
+    draft shift created before an employee's leave was approved could
+    previously slip through every earlier check and still get published
+    squarely on top of that approved leave.
     """
     shift = _get_shift_for_write(scope, shift_id)
 
@@ -387,6 +514,8 @@ def publish_shift(scope: AccessScope, shift_id: int) -> Shift:
         raise ValidationError("Only a draft shift can be published.")
     if shift.employee_id is None:
         raise ValidationError("Cannot publish a shift with no employee assigned.")
+
+    _check_leave_conflict(scope, shift.employee_id, shift.starts_at, shift.ends_at)
 
     shift.status = "published"
     shift.published_at = datetime.now(timezone.utc)
@@ -430,6 +559,21 @@ def cancel_shift(scope: AccessScope, shift_id: int) -> Shift:
     # see app.services.audit's module docstring.
     db.session.commit()
     return shift
+
+
+_SECONDS_PER_HOUR = Decimal(3600)
+
+
+def scheduled_hours(shift: Shift) -> Decimal:
+    """Planned duration of one shift, break excluded — a pure, DB-free
+    read of fields the caller already has. Mirrors
+    ``working_hours._scheduled_seconds`` exactly; no new hours formula,
+    just a per-shift display value for the Schedule page (that module's
+    version only ever sums this across a whole department/day).
+    """
+    duration_seconds = int((shift.ends_at - shift.starts_at).total_seconds())
+    duration_seconds -= shift.break_minutes * 60
+    return Decimal(duration_seconds) / _SECONDS_PER_HOUR
 
 
 def coverage_summary(

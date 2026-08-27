@@ -1,45 +1,112 @@
 {% extends "base.html" %}
 
+{% import "components/badges.html" as badges %}
+{% import "components/icons.html" as icons %}
+
 {% block title %}Employees — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Employees</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Employees</h1>
+      <p class="text-muted">{{ total_count }} employee{{ "s" if total_count != 1 else "" }} in your workforce directory</p>
+    </div>
+  </div>
+{% endblock %}
 
-  {% if employees %}
-    <table>
-      <thead>
-        <tr>
-          <th>Number</th>
-          <th>Name</th>
-          <th>Department</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for employee in employees %}
-          <tr>
-            <td>{{ employee.employee_number }}</td>
-            <td>
-              <a href="{{ url_for('employees.get_employee', employee_id=employee.id) }}">
-                {{ employee.first_name }} {{ employee.last_name }}
-              </a>
-            </td>
-            <td>{{ department_names.get(employee.department_id, "—") }}</td>
-            <td>{{ employee.employment_status }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No employees yet.</p>
+{% block content %}
+  {% if form %}
+    {# `open` when the create form re-renders with validation errors —
+       otherwise a failed submission looks identical to the page before
+       submitting, with the actual field errors hidden inside a
+       collapsed disclosure and no other feedback at all. #}
+    <details class="create-disclosure"{% if form.errors %} open{% endif %}>
+      <summary class="btn btn-primary">Add employee</summary>
+      <div class="card">
+        <h2 class="card-title">{{ icons.icon("users") }} New employee</h2>
+        <form method="post" action="{{ url_for('employees.create_employee') }}" novalidate>
+          {{ form.hidden_tag() }}
+          {% include "employees/form.html" %}
+          <button type="submit" class="btn btn-primary">Create employee</button>
+        </form>
+      </div>
+    </details>
   {% endif %}
 
-  {% if form %}
-    <h2>New employee</h2>
-    <form method="post" action="{{ url_for('employees.create_employee') }}" novalidate>
-      {{ form.hidden_tag() }}
-      {% include "employees/form.html" %}
-      <button type="submit">Create employee</button>
-    </form>
+  <form method="get" class="filter-form">
+    <label>Search
+      <input type="search" name="q" value="{{ search_query or '' }}" placeholder="Name, employee number, or email">
+    </label>
+    <label>Department
+      <select name="department_id">
+        <option value="">All departments</option>
+        {% for department_id, name in department_choices %}
+          <option value="{{ department_id }}" {% if selected_department_id == department_id %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Status
+      <select name="status">
+        <option value="" {% if not selected_status %}selected{% endif %}>All</option>
+        <option value="active" {% if selected_status == "active" %}selected{% endif %}>Active</option>
+        <option value="inactive" {% if selected_status == "inactive" %}selected{% endif %}>Inactive</option>
+        <option value="terminated" {% if selected_status == "terminated" %}selected{% endif %}>Terminated</option>
+      </select>
+    </label>
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if employees %}
+    <div class="table-wrap table-cards-mobile">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Department</th>
+            <th>Weekly Hours</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for employee in employees %}
+            <tr>
+              <td data-label="Employee">
+                <div class="cell-person">
+                  <span class="avatar">{{ employee.first_name[0] }}{{ employee.last_name[0] }}</span>
+                  <div>
+                    <div class="cell-name">
+                      <a href="{{ url_for('employees.get_employee', employee_id=employee.id) }}">
+                        {{ employee.first_name }} {{ employee.last_name }}
+                      </a>
+                    </div>
+                    <div class="cell-sub">{{ employee.employee_number }}</div>
+                  </div>
+                </div>
+              </td>
+              <td data-label="Department">{{ department_names.get(employee.department_id, "—") }}</td>
+              <td data-label="Weekly Hours">{{ employee.weekly_contract_hours if employee.weekly_contract_hours is not none else "—" }}</td>
+              <td data-label="Status">
+                {{ badges.status_badge(
+                  employee.employment_status,
+                  {"active": "success", "inactive": "neutral", "terminated": "danger"}
+                ) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% elif selected_department_id or selected_status or search_query %}
+    <div class="state-card">
+      {{ icons.icon("users") }}
+      <h4>No employees match this search</h4>
+      <p>Try a different name, employee number, or email, or clear the filters above.</p>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("users") }}
+      <h4>No employees yet</h4>
+      <p>Employees you create will appear here.</p>
+    </div>
   {% endif %}
 {% endblock %}

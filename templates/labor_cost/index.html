@@ -1,10 +1,18 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Labor cost — Workforce Management Platform{% endblock %}
 
-{% block content %}
-  <h1>Labor cost</h1>
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Labor cost</h1>
+      <p class="text-muted">Department totals for a selected date range</p>
+    </div>
+  </div>
+{% endblock %}
 
+{% block content %}
   {# Manager or admin: department/date-range totals only. Per confirmed
      rule A4, this page never renders a per-employee figure or an hourly
      rate — only the aggregate below. #}
@@ -24,24 +32,66 @@
     <button type="submit">Show total</button>
   </form>
 
-  {% if department_id and total is not none %}
-    <p class="labor-cost-total">
-      Total labor cost from {{ start }} to {{ end }}: <strong>{{ "%.2f"|format(total) }}</strong>
-    </p>
-    {% if unconfigured_employee_count %}
-      <p class="labor-cost-warning">
-        {{ unconfigured_employee_count }} employee{{ "s" if unconfigured_employee_count != 1 else "" }}
-        missing rate/policy configuration for this range — excluded from the total above.
-      </p>
+  {% if department_id %}
+    {% if total is not none %}
+      <div class="card">
+        <p class="labor-cost-total">
+          Total labor cost from {{ start }} to {{ end }}: <strong>{{ "%.2f"|format(total) }}</strong>
+        </p>
+        {% if unconfigured_employee_count %}
+          <p class="labor-cost-warning">
+            {{ unconfigured_employee_count }} employee{{ "s" if unconfigured_employee_count != 1 else "" }}
+            missing rate/policy configuration for this range — excluded from the total above.
+          </p>
+        {% endif %}
+        <div class="row-actions">
+          <a class="btn btn-secondary" href="{{ url_for('dashboard.hours_trend_report', department_id=department_id, start=start.isoformat(), end=end.isoformat()) }}">View hours trend</a>
+          <a class="btn btn-secondary" href="{{ url_for('dashboard.overtime_report', department_id=department_id, start=start.isoformat(), end=end.isoformat()) }}">View overtime</a>
+        </div>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("coins") }}
+        <h4>No cost total recorded</h4>
+        <p>No labor cost total was recorded for the selected department and date range.</p>
+      </div>
     {% endif %}
-  {% elif department_id %}
-    <p>No total available for this selection.</p>
-  {% endif %}
 
-  {% if is_admin %}
-    <p>
-      Admins can also view an individual employee's cost breakdown from
-      that employee's page.
-    </p>
+    {% if is_admin %}
+      <div class="card">
+        <h2 class="card-title">{{ icons.icon("users") }} Per-Employee Breakdown</h2>
+        {% if department_employees %}
+          <div class="table-wrap table-cards-mobile">
+            <table>
+              <thead>
+                <tr><th>Employee</th><th>Actions</th></tr>
+              </thead>
+              <tbody>
+                {% for employee in department_employees %}
+                  <tr>
+                    <td data-label="Employee">{{ employee.first_name }} {{ employee.last_name }}</td>
+                    <td data-label="Actions">
+                      <a class="btn btn-secondary" href="{{ url_for('labor_cost.employee_detail', employee_id=employee.id, start=start.isoformat(), end=end.isoformat()) }}">View breakdown</a>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="state-card">
+            {{ icons.icon("users") }}
+            <h4>No active employees</h4>
+            <p>This department has no active employees to break down.</p>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("building") }}
+      <h4>Select a department</h4>
+      <p>Choose a department above to see its labor cost total.</p>
+    </div>
   {% endif %}
 {% endblock %}

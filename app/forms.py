@@ -16,7 +16,7 @@ from wtforms import (
     SelectField,
     StringField,
 )
-from wtforms.validators import DataRequired, Length, NumberRange, Optional
+from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
 
 
 class LoginForm(FlaskForm):
@@ -94,6 +94,72 @@ class TerminateEmployeeForm(FlaskForm):
     terminated_on = DateField("Terminated on", validators=[DataRequired()])
 
 
+class ChangePasswordForm(FlaskForm):
+    """Self-service: the signed-in user changes their own password.
+    Requires the current password (see ``auth.service.change_password``
+    for why). Same 12-character minimum as
+    ``CreateEmployeeAccountForm`` — one consistent policy for every
+    password this application ever sets.
+    """
+
+    current_password = PasswordField(
+        "Current password", validators=[DataRequired(), Length(max=255)]
+    )
+    new_password = PasswordField(
+        "New password", validators=[DataRequired(), Length(min=12, max=255)]
+    )
+    confirm_new_password = PasswordField(
+        "Confirm new password",
+        validators=[DataRequired(), EqualTo("new_password", message="Passwords must match.")],
+    )
+
+
+class AdminResetPasswordForm(FlaskForm):
+    """Admin-only: reset a locked-out employee's password directly, since
+    there is no email-sending capability in this application for a
+    self-service "forgot password" link. Same 12-character minimum as
+    every other password this application sets.
+    """
+
+    new_password = PasswordField(
+        "New password", validators=[DataRequired(), Length(min=12, max=255)]
+    )
+    confirm_new_password = PasswordField(
+        "Confirm new password",
+        validators=[DataRequired(), EqualTo("new_password", message="Passwords must match.")],
+    )
+
+
+class UpdateOwnContactForm(FlaskForm):
+    """Self-service: an employee editing their own contact info. Only
+    ``phone`` — MVP-1_version2.md §7 names phone/personal contact info
+    as employee-controlled; email is left out here since ``Employee.
+    email`` is HR contact info while the *login* email lives on the
+    separate ``User`` row, and conflating the two in one self-edit form
+    risks an employee thinking they've changed their sign-in address
+    when they haven't.
+    """
+
+    phone = StringField("Phone", validators=[Optional(), Length(max=50)])
+
+
+class CreateEmployeeAccountForm(FlaskForm):
+    """Admin-only: create the login account for an employee who does not
+    yet have one. No format validator on ``email`` — same convention as
+    ``LoginForm`` (format doesn't matter here either, only whether the
+    address later works to sign in, and the ``email_validator`` package
+    this would need isn't a project dependency).
+    """
+
+    email = StringField("Email", validators=[DataRequired(), Length(max=255)])
+    # 12 characters is a reasonable modern minimum (security.md: "prefer
+    # secure defaults") — there was no existing password-length policy
+    # to preserve, since no account-creation path existed before this.
+    password = PasswordField(
+        "Initial password", validators=[DataRequired(), Length(min=12, max=255)]
+    )
+
+
 # HTML's datetime-local input has no timezone concept at all: whatever it
 # submits is naive wall-clock time, interpreted by the service as local
 # time in the organization's timezone (see app.services.scheduling).
@@ -118,7 +184,13 @@ class _ShiftFieldsMixin:
     break_minutes = IntegerField(
         "Break minutes",
         default=0,
-        validators=[Optional(), NumberRange(min=0)],
+        # Upper bound matches the 24-hour shift/entry duration cap
+        # enforced by the DB elsewhere (see migration 0008/0009's
+        # duration_max_24_hours CHECKs) — without one, a value large
+        # enough to overflow the SmallInteger column raises an unhandled
+        # DataError instead of this field-level message (security-review
+        # finding).
+        validators=[Optional(), NumberRange(min=0, max=1440)],
     )
     notes = StringField("Notes", validators=[Optional(), Length(max=2000)])
 
@@ -245,7 +317,14 @@ class SetPayRateForm(FlaskForm):
     hourly_rate = DecimalField(
         "Hourly rate",
         places=4,
-        validators=[DataRequired(), NumberRange(min=Decimal("0.0001"))],
+        # Upper bound matches the DB's NUMERIC(10, 4) column exactly —
+        # without one, a value large enough to overflow it raises an
+        # unhandled DataError instead of this field-level message
+        # (security-review finding).
+        validators=[
+            DataRequired(),
+            NumberRange(min=Decimal("0.0001"), max=Decimal("999999.9999")),
+        ],
     )
     effective_from = DateField("Effective from", validators=[DataRequired()])
     effective_to = DateField(
@@ -268,7 +347,7 @@ class CorrectEntryForm(FlaskForm):
         "Ended at", format=_DATETIME_LOCAL_FORMATS, validators=[Optional()]
     )
     break_minutes = IntegerField(
-        "Break minutes", validators=[Optional(), NumberRange(min=0)]
+        "Break minutes", validators=[Optional(), NumberRange(min=0, max=1440)]
     )
     edit_reason = StringField(
         "Reason for edit", validators=[DataRequired(), Length(max=2000)]

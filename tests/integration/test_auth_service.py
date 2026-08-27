@@ -10,7 +10,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from freezegun import freeze_time
 
-from app.auth.service import MAX_FAILED_LOGIN_ATTEMPTS, authenticate
+from app.auth.passwords import verify_password
+from app.auth.service import MAX_FAILED_LOGIN_ATTEMPTS, authenticate, change_password
+from app.services.errors import ValidationError
 from tests.factories import make_organization, make_user
 
 pytestmark = pytest.mark.integration
@@ -98,3 +100,33 @@ class TestFailedLoginCountResetAfterLockoutExpires:
 
         db_session.refresh(user)
         assert user.locked_until == locked_until_before
+
+
+class TestChangePassword:
+    def test_changes_the_password_when_current_password_is_correct(self, db_session):
+        org = make_organization(db_session)
+        user = make_user(db_session, organization=org, password=PASSWORD)
+
+        change_password(user, PASSWORD, "a-brand-new-password")
+
+        assert verify_password(user.password_hash, "a-brand-new-password")
+        assert not verify_password(user.password_hash, PASSWORD)
+
+    def test_rejects_an_incorrect_current_password(self, db_session):
+        org = make_organization(db_session)
+        user = make_user(db_session, organization=org, password=PASSWORD)
+
+        with pytest.raises(ValidationError):
+            change_password(user, "wrong current password", "a-brand-new-password")
+
+        assert verify_password(user.password_hash, PASSWORD)
+
+    def test_updates_password_changed_at(self, db_session):
+        org = make_organization(db_session)
+        user = make_user(db_session, organization=org, password=PASSWORD)
+        original_changed_at = user.password_changed_at
+
+        with freeze_time("2026-06-01 12:00:00"):
+            change_password(user, PASSWORD, "a-brand-new-password")
+
+        assert user.password_changed_at != original_changed_at

@@ -67,3 +67,31 @@ def list_entries():
         has_next=result.has_next,
         tz=scheduling_service.organization_timezone(scope),
     )
+
+
+@audit_bp.route("/recent-activity", methods=["GET"])
+@role_required("admin")
+def recent_activity():
+    """A lighter, unpaginated "recent glance" over the same audit log
+    (with actor emails resolved, unlike the raw audit-log view) — its own
+    page rather than a sidebar feed, and its own route rather than a new
+    business concept: this is app.services.reports.recent_activity, the
+    exact composition already used elsewhere, just with a full-page
+    window/limit instead of a small sidebar-sized one.
+    """
+    scope = build_scope_for_user(current_user)
+    default_start, default_end = _default_date_range(scope)
+    start = _parse_date(request.args.get("start"), default_start)
+    end = _parse_date(request.args.get("end"), default_end)
+
+    activity = report_service.recent_activity(
+        scope, start, end, limit=audit_service.DEFAULT_PAGE_SIZE
+    )
+
+    return render_template(
+        "audit/recent_activity.html",
+        activity=activity,
+        start=start,
+        end=end,
+        tz=scheduling_service.organization_timezone(scope),
+    )

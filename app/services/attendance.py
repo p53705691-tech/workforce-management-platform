@@ -64,6 +64,8 @@ _MAX_BACKDATE = timedelta(days=90)
 _OPEN_ENTRY_UNIQUE_INDEX = "uq_attendance_entries_employee_id_open"
 _OVERLAP_EXCLUSION_CONSTRAINT = "ex_attendance_entries_employee_no_overlap"
 _ENDED_AFTER_STARTED_CHECK = "ck_attendance_entries_ended_after_started"
+_BREAK_LESS_THAN_DURATION_CHECK = "ck_attendance_entries_break_minutes_less_than_duration"
+_DURATION_MAX_24_HOURS_CHECK = "ck_attendance_entries_duration_max_24_hours"
 
 
 def _localize(value: datetime, tz: ZoneInfo) -> datetime:
@@ -142,6 +144,39 @@ def _validate_started_at_window(started_at: datetime) -> None:
         )
 
 
+def _validate_ended_after_started(started_at: datetime, ended_at: datetime) -> None:
+    """Reject a non-positive entry duration before it ever reaches the
+    DB's own ``ck_attendance_entries_ended_after_started`` CHECK.
+
+    Checked explicitly (not left to the DB constraint alone) because with
+    a fresh entry's default ``break_minutes=0``, ``ck_attendance_entries_
+    break_minutes_less_than_duration`` evaluates first for this exact
+    case (``0 < a negative number`` is false) and reports a confusing
+    "break too long" message for what is actually a clock-out-before-
+    clock-in mistake — see ``app.services.scheduling._validate_ends_
+    after_starts`` for the identical issue on the shift side.
+    """
+    if ended_at <= started_at:
+        raise ValidationError(
+            "Clock-out time must be after the clock-in time.", field="ended_at"
+        )
+
+
+def _validate_ended_at_not_in_future(ended_at: datetime) -> None:
+    """Reject a clock-out/correction ``ended_at`` set in the future
+    (security-review finding): unlike ``started_at``, this has no
+    "how far back" bound — a past ``ended_at`` is exactly what closing an
+    entry means — only "not later than now", since not-yet-worked time
+    must never be fabricated into worked hours, overtime, or labor cost.
+    Applies to both ``clock_out`` and ``correct_entry``, the only two
+    places that set an entry's ``ended_at``.
+    """
+    if ended_at > datetime.now(timezone.utc):
+        raise ValidationError(
+            "Clock-out time cannot be in the future.", field="ended_at"
+        )
+
+
 def _get_entry_for_scope(scope: AccessScope, attendance_entry_id: int) -> AttendanceEntry:
     """Fetch an attendance entry constrained to ``scope``, or 404.
 
@@ -207,6 +242,17 @@ def _flush_or_raise() -> None:
         if constraint_name == _ENDED_AFTER_STARTED_CHECK:
             raise ValidationError(
                 "Clock-out time must be after the clock-in time."
+            ) from error
+        if constraint_name == _BREAK_LESS_THAN_DURATION_CHECK:
+            raise ValidationError(
+                "Break time cannot be equal to or longer than the "
+                "entry's duration.",
+                field="break_minutes",
+            ) from error
+        if constraint_name == _DURATION_MAX_24_HOURS_CHECK:
+            raise ValidationError(
+                "This entry cannot span more than 24 hours.",
+                field="ended_at",
             ) from error
         raise
 
@@ -326,6 +372,8 @@ def clock_out(
 
     tz = organization_timezone(scope)
     ended_at = _localize(at, tz) if at is not None else datetime.now(timezone.utc)
+    _validate_ended_at_not_in_future(ended_at)
+    _validate_ended_after_started(entry.started_at, ended_at)
 
     entry.ended_at = ended_at
     entry.status = "closed"
@@ -369,8 +417,27 @@ def correct_entry(
         entry.started_at = localized_started_at
         entry.business_date = business_date_for(entry.started_at, tz)
     if ended_at is not None:
-        entry.ended_at = _localize(ended_at, tz)
+        localized_ended_at = _localize(ended_at, tz)
+        _validate_ended_at_not_in_future(localized_ended_at)
+        entry.ended_at = localized_ended_at
         entry.status = "closed"
+    if entry.ended_at is not None:
+        _validate_ended_after_started(entry.started_at, entry.ended_at)
+    if started_at is not None:
+        # Re-run shift-matching against the corrected time — otherwise
+        # the entry keeps pointing at whichever shift (if any) it
+        # originally matched, which reports.attendance_entries_with_
+        # context then computes lateness against, producing nonsense
+        # (or silently wrong) minutes-late figures once the entry no
+        # longer actually falls near that shift's window. Deliberately
+        # done only after both started_at and ended_at (if given) are
+        # already set on ``entry``: this query's autoflush would
+        # otherwise persist started_at alone, transiently violating the
+        # DB's 24-hour duration CHECK against the *old* ended_at whenever
+        # a correction moves both times together.
+        entry.shift_id = _match_shift(
+            scope.organization_id, entry.employee_id, entry.started_at
+        )
     if break_minutes is not None:
         entry.break_minutes = break_minutes
 
@@ -422,6 +489,36 @@ def flag_stale_open_entries(cutoff_hours: int = 16) -> int:
         entry.status = "needs_review"
     db.session.commit()
     return len(stale_entries)
+
+
+def get_open_entry(scope: AccessScope) -> AttendanceEntry | None:
+    """The caller's own currently-unresolved (``ended_at IS NULL``)
+    attendance entry, if any — covers both ``open`` and ``needs_review``
+    states, since both leave ``ended_at`` unset.
+
+    Deliberately unbounded by date rather than a recent-days window: an
+    entry with no clock-out has no upper bound on how long it can stay
+    that way (only a *closed* entry's duration is capped at 24 hours —
+    see migration 0014 — an open one is not), so a fixed lookback window
+    can miss a genuinely still-open or still-flagged entry and leave the
+    caller wrongly shown as "not clocked in" with no way to actually
+    clock in (blocked by the open-entry unique index) or resolve the
+    flag themselves. The DB's own
+    ``uq_attendance_entries_employee_id_open`` partial index guarantees
+    at most one such row per employee, so this is always a cheap,
+    single-row lookup, never a scan.
+    """
+    if scope.employee_id is None:
+        return None
+    return (
+        db.session.query(AttendanceEntry)
+        .filter(
+            AttendanceEntry.organization_id == scope.organization_id,
+            AttendanceEntry.employee_id == scope.employee_id,
+            AttendanceEntry.ended_at.is_(None),
+        )
+        .first()
+    )
 
 
 def list_entries(

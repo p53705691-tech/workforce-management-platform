@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from flask import g
+from freezegun import freeze_time
 
 from tests.factories import make_organization, make_user
 
@@ -184,6 +185,36 @@ def test_existing_session_stops_working_once_the_account_is_deactivated(
     assert "/login" in response.headers["Location"]
 
 
+def test_session_expiry_is_absolute_not_extended_by_activity(client, db_session):
+    """Security-review finding: SESSION_REFRESH_EACH_REQUEST defaults to
+    True, which re-signs the session cookie with a fresh expiry on every
+    response for a permanent session — turning the documented "expires
+    12 hours after login regardless of use" into a 12-hour *idle*
+    timeout that an actively-used stolen cookie would never actually
+    hit. Reproduced here: an authenticated request made partway through
+    the window must not push the expiry back.
+    """
+    user = _make_login_user(db_session)
+
+    with freeze_time("2026-01-01 00:00:00"):
+        client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    with freeze_time("2026-01-01 06:00:00"):
+        # Activity partway through the 12-hour window -- under the old
+        # sliding behavior this would have pushed the expiry to 18:00.
+        _forget_cached_current_user()
+        assert client.get("/").status_code == 302
+
+    with freeze_time("2026-01-01 12:00:01"):
+        # Just past 12 hours from the *original* login. Still well
+        # within what a sliding expiry (refreshed at 06:00) would allow.
+        _forget_cached_current_user()
+        response = client.get("/")
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
 def test_logout_clears_session(client, db_session):
     user = _make_login_user(db_session)
     client.post("/login", data={"email": user.email, "password": PASSWORD})
@@ -200,3 +231,199 @@ def test_logout_clears_session(client, db_session):
     protected_response = client.get("/")
     assert protected_response.status_code == 302
     assert "/login" in protected_response.headers["Location"]
+
+
+def test_user_can_change_their_own_password(client, db_session):
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    response = client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    updated = db_session.query(User).filter_by(id=user.id).one()
+    assert verify_password(updated.password_hash, "a-brand-new-password")
+
+
+def test_changing_own_password_does_not_end_the_current_session(client, db_session):
+    """The session performing a legitimate self-service password change
+    must keep working immediately afterward — see app.models.user.
+    load_user's docstring on why its own session stamp is refreshed by
+    app.routes.auth.change_password_route rather than only at the next
+    login.
+    """
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+    _forget_cached_current_user()
+
+    client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+    )
+    _forget_cached_current_user()
+
+    response = client.get("/")
+    assert response.status_code == 302
+    assert "/login" not in response.headers["Location"]
+
+
+def test_changing_password_signs_out_a_different_existing_session(client, db_session):
+    """A password change (self-service or admin reset) must invalidate
+    any *other* already-established session for the same account, not
+    just block future logins with the old password.
+    """
+    user = _make_login_user(db_session)
+    other_client = client.application.test_client()
+
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+    _forget_cached_current_user()
+    other_client.post("/login", data={"email": user.email, "password": PASSWORD})
+    _forget_cached_current_user()
+
+    client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+    )
+    _forget_cached_current_user()
+
+    response = other_client.get("/")
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_wrong_current_password_is_rejected(client, db_session):
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    response = client.post(
+        "/change-password",
+        data={
+            "current_password": "totally wrong password",
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+        follow_redirects=True,
+    )
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Current password is incorrect" in body
+    unchanged = db_session.query(User).filter_by(id=user.id).one()
+    assert verify_password(unchanged.password_hash, PASSWORD)
+
+
+def test_mismatched_confirmation_is_rejected(client, db_session):
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    response = client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-different-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    unchanged = db_session.query(User).filter_by(id=user.id).one()
+    assert verify_password(unchanged.password_hash, PASSWORD)
+
+
+def test_short_new_password_is_rejected(client, db_session):
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    response = client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "short",
+            "confirm_new_password": "short",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    unchanged = db_session.query(User).filter_by(id=user.id).one()
+    assert verify_password(unchanged.password_hash, PASSWORD)
+
+
+def test_admin_can_reach_the_account_page_and_change_their_password(client, db_session):
+    """Security/QA finding: admin and manager had no reachable page to
+    change their own password from at all, even though the underlying
+    route (change_password_route) was never role-restricted.
+    """
+    org = make_organization(db_session)
+    admin = make_user(db_session, organization=org, role="admin", password=PASSWORD)
+    client.post("/login", data={"email": admin.email, "password": PASSWORD})
+
+    get_response = client.get("/account")
+    assert get_response.status_code == 200
+    assert b"Change Password" in get_response.data
+
+    post_response = client.post(
+        "/change-password",
+        data={
+            "current_password": PASSWORD,
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert post_response.status_code == 200
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    updated = db_session.query(User).filter_by(id=admin.id).one()
+    assert verify_password(updated.password_hash, "a-brand-new-password")
+
+
+def test_anonymous_user_cannot_reach_the_account_page(client):
+    response = client.get("/account")
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_anonymous_user_cannot_change_password(client, db_session):
+    response = client.post(
+        "/change-password",
+        data={
+            "current_password": "whatever",
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+    )
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]

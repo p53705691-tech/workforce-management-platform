@@ -182,3 +182,42 @@
 
   syncForViewport();
 })();
+
+/*
+  Two small, generic, CSP-safe behaviors used across Phase 3's page
+  templates — both driven by data attributes rather than inline
+  `onchange="..."`/`onsubmit="..."` handlers, which the app's CSP
+  (`default-src 'self'`, no `unsafe-inline`) silently drops in every
+  real browser (confirmed: the dashboard's department filter and an
+  early hours-trend layout attempt were both dead on arrival because of
+  this before being moved here).
+
+  [data-autosubmit]  on a <select>: submits its <form> on change. Every
+  call site keeps a plain submit button as the real, always-working
+  control — this is progressive enhancement, not the only way to submit.
+
+  [data-confirm="..."] on a <form>: shows a native confirm() dialog
+  before submitting, for one-click destructive actions (deactivate,
+  cancel) that previously had *less* friction than the edit actions next
+  to them. Never blocks the request server-side — purely a client-side
+  "are you sure" a keyboard/mouse user can still bypass by disabling JS,
+  same as any confirm() dialog; the server remains authoritative.
+*/
+(function () {
+  "use strict";
+
+  document.addEventListener("change", function (event) {
+    var target = event.target;
+    if (target.matches && target.matches("[data-autosubmit]") && target.form) {
+      target.form.submit();
+    }
+  });
+
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    var message = form.getAttribute && form.getAttribute("data-confirm");
+    if (message && !window.confirm(message)) {
+      event.preventDefault();
+    }
+  });
+})();

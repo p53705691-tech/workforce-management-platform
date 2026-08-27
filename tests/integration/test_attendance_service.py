@@ -263,6 +263,108 @@ def test_correct_entry_rejects_a_started_at_too_far_in_the_past(db_session):
         )
 
 
+def test_correct_entry_rejects_an_ended_at_in_the_future(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    with pytest.raises(ValidationError):
+        attendance_service.correct_entry(
+            scope, entry.id, edit_reason="Adjusted per review.", ended_at=future
+        )
+
+
+def test_correct_entry_rematches_the_shift_when_started_at_moves_into_a_different_shift(
+    db_session,
+):
+    """Data/business-logic finding: correcting started_at used to leave
+    the entry's original shift_id attached, so a later report computed
+    lateness against a shift the entry no longer actually falls near.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    original_shift = make_shift(
+        db_session, organization=org, department=department, employee=employee,
+        created_by=admin,
+        starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="published",
+        published_at=datetime.now(timezone.utc),
+    )
+    new_shift = make_shift(
+        db_session, organization=org, department=department, employee=employee,
+        created_by=admin,
+        starts_at=datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 3, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 3), status="published",
+        published_at=datetime.now(timezone.utc),
+    )
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        shift=original_shift,
+        started_at=datetime(2026, 1, 1, 9, 5, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="closed",
+    )
+    assert entry.shift_id == original_shift.id
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    with freeze_time("2026-01-04 12:00:00"):
+        corrected = attendance_service.correct_entry(
+            scope, entry.id, edit_reason="Wrong day entered.",
+            started_at=datetime(2026, 1, 3, 9, 5, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 1, 3, 17, 0, tzinfo=timezone.utc),
+        )
+
+    assert corrected.shift_id == new_shift.id
+
+
+def test_correct_entry_clears_the_shift_when_started_at_no_longer_matches_any_shift(
+    db_session,
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    original_shift = make_shift(
+        db_session, organization=org, department=department, employee=employee,
+        created_by=admin,
+        starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="published",
+        published_at=datetime.now(timezone.utc),
+    )
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        shift=original_shift,
+        started_at=datetime(2026, 1, 1, 9, 5, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+        business_date=date(2026, 1, 1), status="closed",
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    with freeze_time("2026-01-04 12:00:00"):
+        # Within the 90-day backdate window (see _MAX_BACKDATE) but far
+        # from any shift, so this exercises "no longer matches", not
+        # "backdated too far".
+        corrected = attendance_service.correct_entry(
+            scope, entry.id, edit_reason="Wrong week entered.",
+            started_at=datetime(2025, 11, 1, 9, 5, tzinfo=timezone.utc),
+            ended_at=datetime(2025, 11, 1, 17, 0, tzinfo=timezone.utc),
+        )
+
+    assert corrected.shift_id is None
+
+
 def test_self_service_employee_cannot_clock_out_a_needs_review_entry(db_session):
     org = make_organization(db_session)
     department = make_department(db_session, organization=org)
@@ -393,6 +495,42 @@ def test_clock_out_rejects_an_already_closed_entry(db_session):
 
     with pytest.raises(ValidationError):
         attendance_service.clock_out(scope, entry.id)
+
+
+def test_clock_out_rejects_an_ended_at_in_the_future(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        ended_at=None, status="open",
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    with pytest.raises(ValidationError):
+        attendance_service.clock_out(scope, entry.id, at=future)
+
+
+def test_clock_out_rejects_an_ended_at_before_the_clock_in(db_session):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    admin = make_user(db_session, organization=org, role="admin")
+    started_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    entry = make_attendance_entry(
+        db_session, organization=org, employee=employee, created_by=admin,
+        started_at=started_at, ended_at=None, status="open",
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+
+    with pytest.raises(ValidationError, match="Clock-out time must be after"):
+        attendance_service.clock_out(
+            scope, entry.id, at=started_at - timedelta(minutes=1)
+        )
 
 
 def test_correct_entry_without_edit_reason_is_rejected_before_touching_the_db(db_session):

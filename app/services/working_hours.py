@@ -92,6 +92,48 @@ def worked_seconds_for_day(
     return sum(_worked_seconds(entry) for entry in entries)
 
 
+def worked_seconds_by_range(
+    scope: AccessScope, employee_id: int, start_date: date, end_date: date
+) -> dict[date, int]:
+    """Total paid worked seconds for one employee, per business date, for
+    every date in ``[start_date, end_date]`` that has at least one closed
+    entry (a date with none is simply absent from the returned dict —
+    callers should treat a missing key as zero, same as ``worked_seconds_
+    for_day`` would return for that date).
+
+    One query for the whole range plus one visibility check, instead of
+    ``worked_seconds_for_day`` called once per day (two queries each) —
+    the actual fix for the N+1 pattern
+    ``labor_cost.range_cost_for_employee`` used to have (a measured ~2.2s
+    admin dashboard load with just 12 employees / 4 departments). Kept
+    entirely separate from ``worked_seconds_for_day`` rather than
+    reimplementing it in terms of this: that function's single-day
+    contract and query shape stay exactly as they were for its own
+    existing callers (``scheduled_vs_worked``, and any single-day use
+    elsewhere), so this is purely an additive fast path for a caller that
+    genuinely needs a whole range.
+    """
+    _ensure_employee_visible(scope, employee_id)
+
+    entries = (
+        db.session.query(AttendanceEntry)
+        .filter(
+            AttendanceEntry.organization_id == scope.organization_id,
+            AttendanceEntry.employee_id == employee_id,
+            AttendanceEntry.business_date >= start_date,
+            AttendanceEntry.business_date <= end_date,
+            AttendanceEntry.status == "closed",
+        )
+        .all()
+    )
+    seconds_by_date: dict[date, int] = {}
+    for entry in entries:
+        seconds_by_date[entry.business_date] = (
+            seconds_by_date.get(entry.business_date, 0) + _worked_seconds(entry)
+        )
+    return seconds_by_date
+
+
 def worked_seconds_for_week(
     scope: AccessScope,
     employee_id: int,

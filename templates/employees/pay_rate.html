@@ -1,60 +1,75 @@
 {% extends "base.html" %}
+{% import "components/icons.html" as icons %}
 
 {% block title %}Pay rate — {{ employee.first_name }} {{ employee.last_name }} — Workforce Management Platform{% endblock %}
 
-{% block content %}
+{% block page_header %}
   {# Admin only (see app/routes/employees.py): pay rates are more
      sensitive than labor cost totals (confirmed rule A4) — never
      reachable by a manager. #}
-  <h1>Pay rate — {{ employee.first_name }} {{ employee.last_name }}</h1>
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Pay rate — {{ employee.first_name }} {{ employee.last_name }}</h1>
+    </div>
+  </div>
+{% endblock %}
 
+{% block content %}
   {% if history %}
-    <table>
-      <thead>
-        <tr>
-          <th>Hourly rate</th>
-          <th>Effective from</th>
-          <th>Effective to</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for pay_rate in history %}
+    <div class="table-wrap table-cards-mobile">
+      <table class="data">
+        <thead>
           <tr>
-            <td>{{ "%.4f"|format(pay_rate.hourly_rate) }}</td>
-            <td>{{ pay_rate.effective_from }}</td>
-            <td>{{ pay_rate.effective_to or "ongoing" }}</td>
+            <th>Hourly rate</th>
+            <th>Effective from</th>
+            <th>Effective to</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for pay_rate in history %}
+            <tr>
+              <td data-label="Hourly rate">{{ "%.4f"|format(pay_rate.hourly_rate) }}</td>
+              <td data-label="Effective from">{{ pay_rate.effective_from }}</td>
+              <td data-label="Effective to">{{ pay_rate.effective_to or "ongoing" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% else %}
-    <p>No pay rate has been set for this employee yet.</p>
+    <div class="state-card">
+      {{ icons.icon("coins") }}
+      <h4>No pay rate yet</h4>
+      <p>No pay rate has been set for this employee yet.</p>
+    </div>
   {% endif %}
 
-  <h2>Set a new pay rate</h2>
-  <form method="post" action="{{ url_for('employees.set_pay_rate', employee_id=employee.id) }}" novalidate>
-    {{ form.hidden_tag() }}
-    <div class="form-field">
-      {{ form.hourly_rate.label }}
-      {{ form.hourly_rate() }}
-      {% for error in form.hourly_rate.errors %}
-        <p class="field-error">{{ error }}</p>
-      {% endfor %}
-    </div>
-    <div class="form-field">
-      {{ form.effective_from.label }}
-      {{ form.effective_from() }}
-      {% for error in form.effective_from.errors %}
-        <p class="field-error">{{ error }}</p>
-      {% endfor %}
-    </div>
-    <div class="form-field">
-      {{ form.effective_to.label }}
-      {{ form.effective_to() }}
-      {% for error in form.effective_to.errors %}
-        <p class="field-error">{{ error }}</p>
-      {% endfor %}
-    </div>
-    <button type="submit">Save pay rate</button>
-  </form>
+  <div class="card summary-card">
+    <h2 class="card-title">{{ icons.icon("coins") }} Set a new pay rate</h2>
+    <form method="post" action="{{ url_for('employees.set_pay_rate', employee_id=employee.id) }}" novalidate>
+      {{ form.hidden_tag() }}
+      <div class="form-field">
+        {{ form.hourly_rate.label }}
+        {{ form.hourly_rate() }}
+        {% for error in form.hourly_rate.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ form.effective_from.label }}
+        {{ form.effective_from() }}
+        {% for error in form.effective_from.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ form.effective_to.label }}
+        {{ form.effective_to() }}
+        {% for error in form.effective_to.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Save pay rate</button>
+    </form>
+  </div>
 {% endblock %}

@@ -1,0 +1,366 @@
+\chapter{Testing, Data Flows, and Business Rules}
+
+\section{Testing Architecture}
+
+458 tests across 43 files, organized by \emph{kind} rather than by
+feature:
+
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single]
+tests/
+|-- unit/            (4 files)  Pure functions, no DB, no Flask app
+|   |-- test_overtime.py           Tiering math in isolation
+|   |-- test_passwords.py          Argon2 wrapper
+|   |-- test_redirects.py          Open-redirect guard
+|   `-- test_access_scope.py       AccessScope construction
+|-- integration/    (23 files)  Service layer against a real test DB
+|   |-- test_*_service.py          One per service module
+|   |-- test_*_constraints.py      Database CHECK/EXCLUDE/UNIQUE behavior
+|   `-- test_overtime_resolver.py  Effective-dated policy lookup
+|-- routes/          (14 files)  Full HTTP request/response cycle
+|   |-- test_*_routes.py           One per blueprint
+|   |-- test_idor_sweep.py         Cross-tenant/cross-department 404s
+|   |-- test_decorators.py         login_required / role_required
+|   |-- test_security_headers.py   Response headers on every route
+|   `-- test_manager_with_no_departments.py  A real edge case, not a mock
+`-- (top-level: test_app_factory.py, test_database_connection.py)
+\end{lstlisting}
+
+\textbf{Unit tests} need no database or Flask application context at
+all --- \file{tests/unit/test\_overtime.py} is the clearest example:
+the entire daily/weekly tiering algorithm is exercised as plain Python
+function calls with \code{Decimal} inputs.
+
+\textbf{Integration tests} exercise a service function against a real
+PostgreSQL database (a dedicated test database, configured via
+\code{TEST\_DATABASE\_URL}), inside a transaction that is rolled back
+after each test (\code{db\_session} fixture in
+\file{tests/conftest.py}). The \code{\_constraints.py} files
+specifically target database-level behavior --- an \code{IntegrityError}
+from a CHECK/EXCLUDE/UNIQUE constraint --- independent of any
+application code path that might also enforce the same rule.
+
+\textbf{Route tests} drive the application exactly as an HTTP client
+would: log in via \code{POST /login} with real form data (CSRF
+disabled in \code{TestingConfig}), then issue further requests against
+protected routes, asserting on status codes and response body content.
+
+\section{Important Test Cases}
+
+\begin{itemize}
+  \item \textbf{\file{test\_idor\_sweep.py}} --- drives write routes
+        directly with an id belonging to another organization or an
+        unmanaged department, and asserts a plain \textbf{404}. This is
+        the single most important file in the suite for the
+        authorization model in Chapter~2: it protects against the
+        exact class of bug (an id-based lookup that forgets to filter
+        by scope) that a unit test of the "happy path" would never
+        catch.
+  \item \textbf{\file{test\_auth\_service\_timing.py}}
+        (\code{TestLoginTimingParity}) --- protects the
+        anti-enumeration timing defense (\S2.3/\S6.2) by asserting the
+        dummy-hash verification actually runs on every failure branch.
+  \item \textbf{\file{test\_attendance\_constraints.py}} --- protects
+        the duplicate-clock-in guarantee (partial unique index), the
+        overlap exclusion constraint, the 24-hour duration cap, and the
+        status/\code{ended\_at} nullability CHECK, each as a direct
+        database-level test independent of the service layer.
+  \item \textbf{\file{test\_overtime\_constraints.py}} /
+        \textbf{\file{test\_overtime\_resolver.py}} --- protect the
+        effective-dating exclusion constraint (no two overlapping
+        policies for one organization) and correct policy resolution
+        among several historical ones.
+  \item \textbf{\file{test\_overtime.py}} (unit) --- protects the pure
+        tiering math (\code{TestApplyTiers}, \code{TestComputeDailyOvertime},
+        \code{TestComputeWeeklyOvertime}) with no database involved at
+        all, so a regression here is caught in milliseconds.
+  \item \textbf{\file{test\_labor\_cost\_service.py}} --- includes a
+        dedicated test proving line-item rounding and total-of-rounded-items
+        can diverge from rounding-a-combined-total by a cent (\S4.6),
+        and a dedicated proration invariant test
+        ($\text{cost(Mon..Sun)} = \text{cost(Mon..Wed)} +
+        \text{cost(Thu..Sun)}$).
+  \item \textbf{\file{test\_manager\_with\_no\_departments.py}} --- a
+        real edge case (a manager account with zero
+        \code{department\_managers} rows) exercised end-to-end across
+        the dashboard, department list, and employee list, rather than
+        assumed to be handled correctly.
+  \item \textbf{Route tests added for this documentation pass's own
+        recent work} --- e.g.\
+        \longcode{test\_employees\_own\_needs\_review\_entry\_shows\_no\_clock\_out\_button}
+        and
+        \longcode{test\_needs\_review\_entry\_older\_than\_a\_day\_still\_shows\_attention\_state}
+        in \file{test\_attendance\_routes.py} protect the "current
+        status" lookup fix described in \S7.5.
+\end{itemize}
+
+\section{Important System Flows}
+
+\subsection*{Login Flow}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[flownode] (u) {User submits email + password};
+  \node[flownode, below=of u] (auth) {\code{auth.service.authenticate}};
+  \node[flownode, below=of auth] (pw) {Password verified (Argon2), lockout policy applied};
+  \node[flownode, below=of pw] (sess) {\code{session.clear()}; \code{login\_user()}; session marked permanent};
+  \node[flownode, below=of sess] (redir) {Safe redirect to \code{?next=} or the Dashboard};
+  \foreach \a/\b in {u/auth,auth/pw,pw/sess,sess/redir}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\subsection*{Check-In Flow}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[flownode] (e) {Employee clicks "Clock In" (or admin/manager acts on their behalf)};
+  \node[flownode, below=of e] (route) {\code{POST /attendance/clock-in}};
+  \node[flownode, below=of route] (svc) {\code{attendance.clock\_in}: resolve target employee, validate active status, authorization};
+  \node[flownode, below=of svc] (match) {\code{\_match\_shift}: link to a single unambiguous published shift, if any};
+  \node[flownode, below=of match] (db) {Insert row; DB's partial unique index guarantees no existing open entry};
+  \node[flownode, below=of db] (result) {Open \code{AttendanceEntry} (status=\code{open})};
+  \foreach \a/\b in {e/route,route/svc,svc/match,match/db,db/result}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\subsection*{Check-Out Flow}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[flownode] (e) {Employee clicks "Clock Out" for their open entry};
+  \node[flownode, below=of e] (route) {\code{POST /attendance/<id>/clock-out}};
+  \node[flownode, below=of route] (check) {\code{attendance.clock\_out}: reject if already closed or \code{needs\_review}};
+  \node[flownode, below=of check] (db) {Set \code{ended\_at}, \code{status = 'closed'}};
+  \node[flownode, below=of db] (result) {Closed entry now counts toward worked hours / overtime / labor cost};
+  \foreach \a/\b in {e/route,route/check,check/db,db/result}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\subsection*{Leave Request Flow}
+
+\begin{center}
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[flownode] (e) {Employee submits a leave request};
+  \node[flownode, below=of e] (route) {\code{POST /leave}};
+  \node[flownode, below=of route] (val) {\code{leave.request\_leave}: validate employee/leave type, overlap pre-check};
+  \node[flownode, below=of val] (db) {Insert row, status=\code{pending} (DB exclusion constraint is the final overlap authority)};
+  \node[flownode, below=of db] (mgr) {Admin/manager reviews: conflicting published shifts shown inline};
+  \node[flownode, below=of mgr] (decide) {\code{approve\_leave} (blocked by shift conflict or self-approval) or \code{reject\_leave} (reason required)};
+  \foreach \a/\b in {e/route,route/val,val/db,db/mgr,mgr/decide}
+    \draw[flowarrow] (\a) -- (\b);
+\end{tikzpicture}
+\end{center}
+
+\section{Business Rules Catalog}
+
+\begin{businessrule}{BR-001}{Attribution date follows the organization's local timezone (rule A1)}
+\textbf{Description:} A shift's or attendance entry's \code{business\_date}
+is the local calendar date of its start time in the organization's own
+timezone, not the server's --- an overnight period is attributed
+entirely to its start date, never split.\\
+\textbf{Where implemented:} \longcode{scheduling.business\_date\_for},
+reused by \code{attendance.clock\_in}\allowbreak/\code{correct\_entry}.\\
+\textbf{Why it exists:} A server in UTC and an organization in, say,
+\code{Pacific/Auckland} disagree about "today" for roughly half of
+every day; every "as of today" report must agree on one definition.\\
+\textbf{Tests protecting it:} \file{test\_attendance\_constraints.py}'s
+\longcode{test\_overnight\_entry\_is\_stored\_as\_a\_single\_row\_with\_start\_date\_attribution};
+\longcode{test\_default\_date\_range\_uses\_the\_organizations\_local\_date\_not\_the\_servers}
+in \file{test\_schedule\_routes.py}.
+\end{businessrule}
+
+\begin{businessrule}{BR-002}{Shift-match grace window (rule A3)}
+\textbf{Description:} A clock-in within 60 minutes of a published
+shift's start or end still counts as "working that shift" for
+automatic matching purposes.\\
+\textbf{Where implemented:} \code{attendance.\_match\_shift}
+(\code{\_SHIFT\_MATCH\_GRACE}).\\
+\textbf{Why it exists:} Employees rarely clock in at the exact minute a
+shift starts; without a grace window, "who is absent today" would
+misclassify a slightly-early or slightly-late arrival as unscheduled
+work with no matched shift.\\
+\textbf{Tests protecting it:} Attendance service integration tests
+covering shift matching.
+\end{businessrule}
+
+\begin{businessrule}{BR-003}{Managers never see an individual pay rate or per-employee cost (rule A4)}
+\textbf{Description:} A manager may see department-level cost
+\emph{totals} and per-employee overtime \emph{hours}, but never an
+hourly rate or an individual's exact cost.\\
+\textbf{Where implemented:} \code{role\_required("admin")} (not
+\code{"admin","manager"}) on the pay-rate and employee-cost-breakdown
+routes; \code{reports.overtime\_summary} reads only
+\code{.hours}/\code{.category}.\\
+\textbf{Why it exists:} Pay rates are more sensitive than aggregate
+cost figures; a manager needs enough information to manage a budget,
+not to know a colleague's exact wage.\\
+\textbf{Tests protecting it:} \code{test\_labor\_cost\_routes.py}'s
+manager-cannot-reach-admin-only-detail tests and the
+Per-Employee-Breakdown visibility test; \code{test\_dashboard\_routes.py}'s
+\code{test\_manager\_never\_sees\_pay\_rate\_or\_cost\_on\_overtime\_report}.
+\end{businessrule}
+
+\begin{businessrule}{BR-004}{Maximum 24-hour span for a shift or attendance entry (rule A7)}
+\textbf{Description:} No single shift or attendance entry may span more
+than 24 hours.\\
+\textbf{Where implemented:} \code{duration\_max\_24\_hours} CHECK
+constraints on both \code{shifts} and \code{attendance\_entries}.\\
+\textbf{Why it exists:} Without a cap, a colluding manager and employee
+(or a data-entry mistake) could post an arbitrarily long entry that
+flows straight into overtime/labor-cost calculations.\\
+\textbf{Tests protecting it:} \code{test\_attendance\_constraints.py}'s
+\longcode{test\_duration\_max\_24\_hours\_check\_rejects\_an\_overlong\_entry}.
+\end{businessrule}
+
+\begin{businessrule}{BR-005}{Stale open entries are flagged, never auto-closed (rule A11)}
+\textbf{Description:} An open attendance entry with no clock-out after
+a configurable cutoff (default 16 hours) is marked \code{needs\_review}
+--- the system never invents an end time for it.\\
+\textbf{Where implemented:} \code{attendance.flag\_stale\_open\_entries},
+run via \code{flask attendance flag-stale}.\\
+\textbf{Why it exists:} Guessing an end time would silently fabricate
+paid hours; flagging for human review preserves data integrity at the
+cost of requiring a correction.\\
+\textbf{Tests protecting it:} Attendance service tests covering
+\code{flag\_stale\_open\_entries}; \code{TestAttendanceNeedingReview} in
+\file{test\_reports\_service.py}.
+\end{businessrule}
+
+\begin{businessrule}{BR-006}{A needs-review entry can only be resolved by a correction, not a plain clock-out}
+\textbf{Description:} \code{clock\_out} explicitly rejects an entry in
+\code{needs\_review} status; only \code{correct\_entry} (admin/manager,
+mandatory reason) can resolve one.\\
+\textbf{Where implemented:} \code{attendance.clock\_out}.\\
+\textbf{Why it exists:} Allowing a plain clock-out to resolve a flagged
+entry would defeat the entire purpose of flagging it --- there would be
+no cap on the resulting duration and no human review at all.\\
+\textbf{Tests protecting it:}
+\longcode{test\_employees\_own\_needs\_review\_entry\_shows\_no\_clock\_out\_button}
+and
+\longcode{test\_needs\_review\_entry\_older\_than\_a\_day\_still\_shows\_attention\_state}
+(\file{test\_attendance\_routes.py}).
+\end{businessrule}
+
+\begin{businessrule}{BR-007}{No worked hour is priced under two overtime multipliers}
+\textbf{Description:} Weekly overtime is computed only from hours not
+already counted as daily overtime for that week.\\
+\textbf{Where implemented:} \code{overtime.compute\_weekly\_overtime};
+the reclassification logic in \code{labor\_cost.range\_cost\_for\_employee}.\\
+\textbf{Why it exists:} A naive implementation would pay the same hour
+once at a daily multiplier and again at a weekly one, silently
+overpaying --- explicitly forbidden.\\
+\textbf{Tests protecting it:} \code{TestComputeWeeklyOvertime}
+(\file{tests/unit/test\_overtime.py}); the proration invariant test in
+\file{test\_labor\_cost\_service.py}.
+\end{businessrule}
+
+\begin{businessrule}{BR-008}{Money is rounded per line item, never from a combined total (rule A12)}
+\textbf{Description:} Each priced \code{LineItem} is independently
+rounded (\code{ROUND\_HALF\_UP}, 2dp); a total is the sum of already-rounded
+items.\\
+\textbf{Where implemented:} \code{labor\_cost.\_rounded\_cost}.\\
+\textbf{Why it exists:} The two rounding strategies can disagree by a
+cent; per-line-item rounding is the one that matches how a real payroll
+statement itemizes cost.\\
+\textbf{Tests protecting it:} \file{test\_labor\_cost\_service.py}'s
+dedicated rounding-divergence test.
+\end{businessrule}
+
+\begin{businessrule}{BR-009}{Account lockout after repeated failed logins}
+\textbf{Description:} 5 consecutive failed attempts lock an account for
+15 minutes; a failure against an already-expired lock resets the
+counter instead of re-locking indefinitely.\\
+\textbf{Where implemented:} \code{auth.service.authenticate}.\\
+\textbf{Why it exists:} Bounds brute-force login attempts without
+permanently locking out a legitimate user who mistypes a password
+repeatedly.\\
+\textbf{Tests protecting it:} Auth service integration tests covering
+lockout and reset behavior; \code{TestLoginTimingParity}
+(\file{test\_auth\_service\_timing.py}) for the related timing defense.
+\end{businessrule}
+
+\begin{businessrule}{BR-010}{Self-approval of leave is blocked}
+\textbf{Description:} An admin/manager who is also the requesting
+employee (via \code{scope.employee\_id}) may not approve their own
+leave request.\\
+\textbf{Where implemented:} \code{leave.approve\_leave}.\\
+\textbf{Why it exists:} A basic separation-of-duties control --- an
+approval workflow with no independent reviewer is not a real approval
+workflow.\\
+\textbf{Tests protecting it:} Leave service/route tests covering
+approval authorization.
+\end{businessrule}
+
+\begin{businessrule}{BR-011}{Only an active employee may be newly scheduled, clocked in, or requested for leave}
+\textbf{Description:} An inactive or terminated employee cannot be
+assigned a new shift, cannot clock in fresh, and cannot have a new
+leave request filed for them --- but their \emph{existing} historical
+records are left untouched.\\
+\textbf{Where implemented:} \longcode{scheduling.\_validate\_employee\_assignable},
+\longcode{attendance.\_validate\_employee\_for\_scope},
+\longcode{leave.\_validate\_employee\_for\_scope}.\\
+\textbf{Why it exists:} A terminated employee must never appear on a
+future schedule, but rewriting their past schedule/attendance would
+falsify history.\\
+\textbf{Tests protecting it:} Scheduling/attendance/leave service tests
+covering inactive/terminated employees.
+\end{businessrule}
+
+\begin{businessrule}{BR-012}{Departments and organizations are deactivated, never deleted}
+\textbf{Description:} \code{deactivate\_department} sets
+\code{is\_active = false}; there is no delete path for a department,
+employee, or organization anywhere in the codebase.\\
+\textbf{Where implemented:} \code{departments.deactivate\_department};
+reinforced at the schema level by \code{ON DELETE RESTRICT} on every
+foreign key referencing these tables (\S3.5).\\
+\textbf{Why it exists:} Historical schedules, attendance, and cost
+reports may still reference a department or employee long after it
+stops being active.\\
+\textbf{Tests protecting it:} Department service/constraint tests.
+\end{businessrule}
+
+\section{Error Handling}
+
+\begin{longtable}{@{}p{4.0cm}p{4.5cm}p{5.6cm}@{}}
+\toprule
+\textbf{Failure case} & \textbf{Where handled} & \textbf{Response} \\
+\midrule
+\endhead
+Invalid login & \code{auth.service.authenticate} & Generic
+  \code{"Invalid email or password."}, flashed; identical for every
+  failure reason. \\
+Unauthorized (not logged in) & Flask-Login & Redirect to \code{/login}
+  with a flashed message. \\
+Forbidden (wrong role) & \code{role\_required} & Plain \textbf{403}
+  page. \\
+Missing/out-of-scope employee, shift, leave request, etc. & every
+  service's own scoped lookup & \textbf{404}, never 403, so existence
+  cannot be inferred (Chapter~2). \\
+Invalid schedule (overlap, leave conflict) & \code{scheduling.\_check\_overlap}/
+  \code{\_check\_leave\_conflict}, backed by DB exclusion constraints &
+  A specific \code{ValidationError} message, flashed. \\
+Invalid leave request (overlap, missing reason on rejection) &
+  \code{leave.py} & Specific \code{ValidationError}, flashed. \\
+Invalid attendance operation (duplicate clock-in, clock-out on a closed
+  or needs-review entry) & \code{attendance.py}, backed by the DB's
+  partial unique index & Specific \code{ValidationError}, flashed;
+  never a raw \code{IntegrityError}. \\
+Missing pay-rate/overtime-policy configuration & \code{labor\_cost.
+  \_daily\_breakdown} & A named \code{ValidationError}; department
+  totals isolate the affected employee rather than failing the whole
+  report (\S4.6). \\
+Database constraint violation not otherwise translated & every
+  \code{\_commit\_or\_raise\*}/\code{\_flush\_or\_raise*} helper &
+  Re-raised as-is if the constraint name isn't recognized, ultimately
+  caught by the route's generic \code{IntegrityError} handler and
+  flashed as a conflict message. \\
+Validation failure (form-level) & WTForms validators & Field-level
+  error rendered next to the offending input. \\
+Unhandled server error & \longcode{app.errors.handle\_internal\_server\_error} &
+  Generic 500 page; full exception logged server-side only. \\
+Request body too large & Flask's \code{MAX\_CONTENT\_LENGTH} & 413
+  page. \\
+\bottomrule
+\end{longtable}

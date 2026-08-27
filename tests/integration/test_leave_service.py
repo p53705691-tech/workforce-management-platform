@@ -182,6 +182,42 @@ def test_request_leave_rejects_a_leave_type_from_another_organization(db_session
         )
 
 
+def test_request_leave_rejects_an_end_before_start(db_session):
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org)
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+
+    with pytest.raises(ValidationError):
+        leave_service.request_leave(
+            scope,
+            leave_type_id=leave_type.id,
+            starts_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            employee_id=employee.id,
+        )
+
+
+def test_request_leave_rejects_a_deactivated_leave_type(db_session):
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org)
+    leave_type = make_leave_type(db_session, organization=org, is_active=False)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+
+    with pytest.raises(ValidationError):
+        leave_service.request_leave(
+            scope,
+            leave_type_id=leave_type.id,
+            starts_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 1, 1, 17, 0, tzinfo=timezone.utc),
+            employee_id=employee.id,
+        )
+
+
 def test_request_leave_rejects_an_overlapping_pending_request(db_session):
     org = make_organization(db_session)
     employee = make_employee(db_session, organization=org)
