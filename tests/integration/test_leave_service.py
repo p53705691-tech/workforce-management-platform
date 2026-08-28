@@ -1,5 +1,6 @@
 """Integration tests for app.services.leave — DB + authorization."""
 
+import smtplib
 from datetime import date, datetime, timezone
 
 import pytest
@@ -10,6 +11,7 @@ from app.services import leave as leave_service
 from app.services.errors import ValidationError
 from tests.factories import (
     make_department,
+    make_department_manager,
     make_employee,
     make_leave_request,
     make_leave_type,
@@ -594,3 +596,225 @@ def test_list_leave_requests_scopes_by_role(db_session):
     employee_scope = _scope("employee", org.id, employee_id=employee.id)
     employee_results = leave_service.list_leave_requests(employee_scope)
     assert [r.id for r in employee_results] == [managed_request.id]
+
+
+# --- Notification wiring (app.services.notifications) -----------------
+#
+# request_leave notifies the department's managers; approve_leave/
+# reject_leave notify the requesting employee. Every call site is
+# best-effort: a missing email is skipped silently, and a simulated SMTP
+# failure must never prevent the primary action from committing (see
+# app.services.notifications's module docstring).
+
+
+def test_request_leave_notifies_department_managers(db_session, monkeypatch):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    leave_type = make_leave_type(db_session, organization=org, name="Sick Leave")
+    manager = make_user(
+        db_session, organization=org, role="manager", email="manager@example.com"
+    )
+    make_department_manager(db_session, user=manager, department=department, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append((to, subject, template_name, ctx)),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    leave_service.request_leave(
+        scope,
+        leave_type_id=leave_type.id,
+        starts_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 3, 1, 17, 0, tzinfo=timezone.utc),
+        employee_id=employee.id,
+        reason="Feeling unwell",
+    )
+
+    assert len(sent) == 1
+    to, subject, template_name, context = sent[0]
+    assert to == "manager@example.com"
+    assert template_name == "leave_requested"
+    assert context["employee_name"] == f"{employee.first_name} {employee.last_name}"
+    assert context["leave_type_name"] == "Sick Leave"
+    assert context["reason"] == "Feeling unwell"
+
+
+def test_request_leave_notifies_every_manager_of_a_multi_managed_department(
+    db_session, monkeypatch
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    leave_type = make_leave_type(db_session, organization=org)
+    manager_one = make_user(
+        db_session, organization=org, role="manager", email="one@example.com"
+    )
+    manager_two = make_user(
+        db_session, organization=org, role="manager", email="two@example.com"
+    )
+    make_department_manager(db_session, user=manager_one, department=department, organization=org)
+    make_department_manager(db_session, user=manager_two, department=department, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append(to),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    leave_service.request_leave(
+        scope,
+        leave_type_id=leave_type.id,
+        starts_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 3, 1, 17, 0, tzinfo=timezone.utc),
+        employee_id=employee.id,
+    )
+
+    assert sorted(sent) == ["one@example.com", "two@example.com"]
+
+
+def test_request_leave_skips_notification_silently_when_department_has_no_manager(
+    db_session, monkeypatch
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    leave_request = leave_service.request_leave(
+        scope,
+        leave_type_id=leave_type.id,
+        starts_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 3, 1, 17, 0, tzinfo=timezone.utc),
+        employee_id=employee.id,
+    )
+
+    assert leave_request.status == "pending"
+    assert sent == []
+
+
+def test_approve_leave_notifies_the_requesting_employee(db_session, monkeypatch):
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org, email="employee@example.com")
+    leave_type = make_leave_type(db_session, organization=org, name="Annual Leave")
+    admin = make_user(db_session, organization=org, role="admin")
+    leave_request = make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type, requested_by=admin
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append((to, subject, template_name, ctx)),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    leave_service.approve_leave(scope, leave_request.id, decision_note="Enjoy your time off.")
+
+    assert len(sent) == 1
+    to, subject, template_name, context = sent[0]
+    assert to == "employee@example.com"
+    assert template_name == "leave_approved"
+    assert context["decision_note"] == "Enjoy your time off."
+    assert context["leave_type_name"] == "Annual Leave"
+
+
+def test_reject_leave_notifies_the_requesting_employee(db_session, monkeypatch):
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org, email="employee@example.com")
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    leave_request = make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type, requested_by=admin
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append((to, subject, template_name, ctx)),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    leave_service.reject_leave(scope, leave_request.id, decision_note="No coverage available.")
+
+    assert len(sent) == 1
+    to, subject, template_name, context = sent[0]
+    assert to == "employee@example.com"
+    assert template_name == "leave_rejected"
+    assert context["decision_note"] == "No coverage available."
+
+
+def test_reject_leave_skips_notification_silently_when_employee_has_no_email(
+    db_session, monkeypatch
+):
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org)
+    assert employee.email is None
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    leave_request = make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type, requested_by=admin
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        leave_service.notification_service,
+        "send_email",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    rejected = leave_service.reject_leave(scope, leave_request.id, decision_note="No coverage.")
+
+    assert rejected.status == "rejected"
+    assert sent == []
+
+
+def test_approve_leave_succeeds_even_when_the_smtp_server_is_unreachable(
+    db_session, app, monkeypatch
+):
+    """The primary write (approving the leave request) must commit and
+    be returned to the caller even if the notification email's SMTP send
+    fails outright — see app.services.notifications's module docstring.
+    """
+    org = make_organization(db_session)
+    employee = make_employee(db_session, organization=org, email="employee@example.com")
+    leave_type = make_leave_type(db_session, organization=org)
+    admin = make_user(db_session, organization=org, role="admin")
+    leave_request = make_leave_request(
+        db_session, organization=org, employee=employee, leave_type=leave_type, requested_by=admin
+    )
+
+    monkeypatch.setitem(app.config, "MAIL_BACKEND", "smtp")
+    monkeypatch.setitem(app.config, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setitem(app.config, "MAIL_FROM_ADDRESS", "noreply@acme.test")
+
+    def _boom(*args, **kwargs):
+        raise TimeoutError("smtp server unreachable")
+
+    monkeypatch.setattr(smtplib, "SMTP", _boom)
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    approved = leave_service.approve_leave(scope, leave_request.id, decision_note="Approved.")
+
+    assert approved.status == "approved"
+    db_session.refresh(leave_request)
+    assert leave_request.status == "approved"

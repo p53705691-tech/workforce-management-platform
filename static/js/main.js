@@ -221,3 +221,53 @@
     }
   });
 })();
+
+/*
+  [data-geo-capture] on a clock-in/out <form>: best-effort, one-shot
+  location capture into that form's hidden `latitude`/`longitude`
+  fields (app.forms.ClockInForm/ClockOutForm), read server-side only
+  when the organization's location_validation_mode actually requires it
+  (app.services.location) — most organizations (e.g. taxi, MOBILE mode)
+  never look at these fields at all.
+
+  Deliberately a single navigator.geolocation.getCurrentPosition() call
+  per page load, not watchPosition — this codebase never does continuous
+  location tracking (client constraint). Submitting the form must never
+  be blocked waiting on this: if geolocation is denied, unavailable, or
+  slow, the fields are simply left blank and the plain submit button
+  keeps working exactly as it does with JS disabled entirely — the
+  server decides whether a missing location is actually a problem for
+  this organization's mode.
+*/
+(function () {
+  "use strict";
+
+  if (!("geolocation" in navigator)) {
+    return;
+  }
+
+  var forms = document.querySelectorAll("[data-geo-capture]");
+  if (!forms.length) {
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    function (position) {
+      for (var i = 0; i < forms.length; i++) {
+        var latitudeField = forms[i].querySelector('[name="latitude"]');
+        var longitudeField = forms[i].querySelector('[name="longitude"]');
+        if (latitudeField) {
+          latitudeField.value = position.coords.latitude;
+        }
+        if (longitudeField) {
+          longitudeField.value = position.coords.longitude;
+        }
+      }
+    },
+    function () {
+      // Permission denied, position unavailable, or timed out — the
+      // fields simply stay blank; see the block comment above.
+    },
+    { maximumAge: 60000, timeout: 5000 }
+  );
+})();

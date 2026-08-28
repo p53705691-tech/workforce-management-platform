@@ -1,0 +1,7 @@
+{% extends "emails/_base.html" %}
+{% block body %}
+<p style="margin:0 0 16px;font-size:16px;font-weight:600;color:#18181b;">Your account is ready</p>
+<p style="margin:0 0 16px;">An account has been created for you on {{ organization_name }}'s workforce management system.</p>
+<p style="margin:0 0 16px;"><strong>Login email:</strong> {{ login_email }}</p>
+<p style="margin:0;">Your password was set by whoever created your account and has been shared with you separately. Sign in with it, then change it from your account settings if you'd like.</p>
+{% endblock %}

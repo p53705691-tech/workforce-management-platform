@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Working hours report — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Working hours report</h1>
+      <p class="text-muted">Daily worked hours per employee for a selected department and date range</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <form method="get" class="filter-form">
+    <label>Department
+      <select name="department_id">
+        <option value="">Select a department</option>
+        {% for department in departments %}
+          <option value="{{ department.id }}" {% if department.id == department_id %}selected{% endif %}>
+            {{ department.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>From <input type="date" name="start" value="{{ start.isoformat() }}"></label>
+    <label>To <input type="date" name="end" value="{{ end.isoformat() }}"></label>
+    <button type="submit">Show</button>
+  </form>
+
+  {% if department_id %}
+    {% if daily_hours %}
+      {% set total_hours = daily_hours | sum(attribute="hours") %}
+      <div class="card">
+        <p class="report-total">{{ "%.2f"|format(total_hours) }}h</p>
+        <p class="text-muted">Total worked hours, {{ start }} to {{ end }}</p>
+        <div class="row-actions">
+          <a class="btn btn-secondary" href="{{ url_for('dashboard.working_hours_report', department_id=department_id, start=start.isoformat(), end=end.isoformat(), format='csv') }}">{{ icons.icon("download") }} Export CSV</a>
+          <a class="btn btn-secondary" href="{{ url_for('dashboard.working_hours_report', department_id=department_id, start=start.isoformat(), end=end.isoformat(), format='pdf') }}">{{ icons.icon("download") }} Export PDF</a>
+        </div>
+      </div>
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Employee</th><th>Date</th><th>Worked hours</th></tr>
+          </thead>
+          <tbody>
+            {% for row in daily_hours %}
+              <tr>
+                <td data-label="Employee">{{ employee_names.get(row.employee_id, "—") }}</td>
+                <td data-label="Date">{{ row.date }}</td>
+                <td data-label="Worked hours">{{ "%.2f"|format(row.hours) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("clock") }}
+        <h4>No worked hours in this range</h4>
+        <p>No closed attendance entries were found for this department and date range.</p>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("building") }}
+      <h4>Select a department</h4>
+      <p>Choose a department above to see its working hours report.</p>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -24,4 +24,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "wsgi:app"]
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "-b", "0.0.0.0:8000", "wsgi:app"]

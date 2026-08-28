@@ -11,6 +11,16 @@ psycopg[binary]==3.3.4
 python-dotenv==1.2.3
 argon2-cffi==25.1.0
 gunicorn==26.1.0
+# Shared Flask-Limiter storage backend for production (see
+# app.config.ProductionConfig / RATELIMIT_STORAGE_URI) — required once
+# Gunicorn runs more than one worker, so per-IP rate limits stay
+# accurate across all of them instead of resetting per worker.
+redis==5.2.1
+# PDF report rendering (app.services.pdf_reports). Pure-Python, no
+# system-level libraries required (unlike an HTML/CSS-to-PDF renderer),
+# which keeps the Docker image simple. Pulls in Pillow as its own
+# dependency (prebuilt wheels, no system libs needed either).
+reportlab==5.0.1
 
 # Development / test dependencies
 pytest==9.1.1

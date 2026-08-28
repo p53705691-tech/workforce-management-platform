@@ -1,5 +1,6 @@
 """Application factory."""
 
+import logging
 import os
 from pathlib import Path
 
@@ -20,6 +21,31 @@ from app import models  # noqa: F401
 # app.root_path) would look inside app/ instead, so both are pointed at
 # their real location explicitly.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _configure_logging() -> None:
+    """Set the root log level from ``LOG_LEVEL`` (default INFO).
+
+    Without this, Python's logging defaults to WARNING on the root
+    logger with no explicit handler/format, so every ``logger.info``
+    call in this codebase (e.g. app.services.notifications's "console"
+    backend, gunicorn's own request logging) silently produces nothing
+    under Gunicorn. Called once, at import time, not inside
+    ``create_app`` — logging is process-global configuration, not
+    per-Flask-app state, and ``create_app`` may run more than once in a
+    single process (e.g. the test suite's session-scoped ``app``
+    fixture).
+    """
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = logging.getLevelName(level_name)
+    if not isinstance(level, int):
+        level = logging.INFO
+    logging.basicConfig(
+        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
+
+_configure_logging()
 
 
 def create_app(config_name=None):
@@ -120,7 +146,9 @@ def create_app(config_name=None):
     from app.routes.labor_cost import labor_cost_bp
     from app.routes.leave import leave_bp
     from app.routes.main import main_bp
+    from app.routes.managers import managers_bp
     from app.routes.schedule import schedule_bp
+    from app.routes.settings import settings_bp
 
     app.register_blueprint(attendance_bp)
     app.register_blueprint(audit_bp)
@@ -131,7 +159,9 @@ def create_app(config_name=None):
     app.register_blueprint(labor_cost_bp)
     app.register_blueprint(leave_bp)
     app.register_blueprint(main_bp)
+    app.register_blueprint(managers_bp)
     app.register_blueprint(schedule_bp)
+    app.register_blueprint(settings_bp)
 
     from app.cli import register_cli
 

@@ -7,6 +7,7 @@ services:
       - .env
     depends_on:
       - postgres
+      - redis
 
   # QA finding: an employee who forgets to clock out has no way to
   # resolve it themselves after 24h (the DB's own duration cap rejects a
@@ -37,6 +38,15 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  # Shared storage for Flask-Limiter (app.extensions.limiter) — see
+  # RATELIMIT_STORAGE_URI in app/config.py's ProductionConfig. No
+  # persistence volume: rate-limit counters are disposable, short-lived
+  # state, never data worth surviving a restart.
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
 
 volumes:
   postgres_data:

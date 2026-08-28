@@ -18,8 +18,11 @@ from app.auth.decorators import login_required, role_required
 from app.auth.scope import build_scope_for_user
 from app.extensions import db
 from app.forms import AdminClockInForm, AdminClockOutForm, ClockInForm, ClockOutForm, CorrectEntryForm
+from app.routes import csv_response, pdf_response
 from app.services import attendance as attendance_service
 from app.services import employees as employee_service
+from app.services import exports as export_service
+from app.services import pdf_reports as pdf_report_service
 from app.services import reports as report_service
 from app.services import scheduling as scheduling_service
 from app.services.errors import ValidationError
@@ -72,10 +75,23 @@ def list_entries():
     end = _parse_date(request.args.get("end"), default_end)
     start, end = _clamp_range(start, end)
     employee_id = request.args.get("employee_id", type=int)
-
     can_manage = scope.role in ("admin", "manager")
+    scoped_employee_id = employee_id if can_manage else None
+
+    export_format = request.args.get("format")
+    if export_format == "csv":
+        filename, csv_text = export_service.attendance_csv(
+            scope, start, end, employee_id=scoped_employee_id
+        )
+        return csv_response(filename, csv_text)
+    if export_format == "pdf":
+        pdf_bytes = pdf_report_service.attendance_pdf(
+            scope, start, end, employee_id=scoped_employee_id
+        )
+        return pdf_response(f"attendance_{start.isoformat()}_{end.isoformat()}.pdf", pdf_bytes)
+
     entries_context = report_service.attendance_entries_with_context(
-        scope, start, end, employee_id=employee_id if can_manage else None
+        scope, start, end, employee_id=scoped_employee_id
     )
 
     employee_names = {}
@@ -142,7 +158,13 @@ def clock_in():
             # neither field exists at all on the plain self-service form.
             employee_id = (form.employee_id.data or None) if can_manage else None
             at = form.at.data if can_manage else None
-            attendance_service.clock_in(scope, employee_id=employee_id, at=at)
+            attendance_service.clock_in(
+                scope,
+                employee_id=employee_id,
+                at=at,
+                latitude=form.latitude.data,
+                longitude=form.longitude.data,
+            )
             flash("Clocked in.", "success")
         except ValidationError as error:
             flash(error.message, "error")
@@ -168,7 +190,13 @@ def clock_out(entry_id):
     if form.validate_on_submit():
         try:
             at = form.at.data if can_manage else None
-            attendance_service.clock_out(scope, entry_id, at=at)
+            attendance_service.clock_out(
+                scope,
+                entry_id,
+                at=at,
+                latitude=form.latitude.data,
+                longitude=form.longitude.data,
+            )
             flash("Clocked out.", "success")
         except ValidationError as error:
             flash(error.message, "error")

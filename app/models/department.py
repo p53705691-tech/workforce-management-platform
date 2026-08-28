@@ -6,7 +6,18 @@ Schema only for M1: the ``users`` table has a composite FK down through
 department management arrives in M2.
 """
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Text, UniqueConstraint, text, true
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Numeric,
+    Text,
+    UniqueConstraint,
+    text,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.extensions import db
@@ -29,6 +40,27 @@ class Department(TimestampMixin, db.Model):
             text("lower(name)"),
             unique=True,
         ),
+        # Fixed-site clock-in/out validation (Organization.location_
+        # validation_mode == FIXED_SITE, e.g. a barbershop's branches) —
+        # all three or none: a department is never "half configured"
+        # for this, which would otherwise let a validation check run
+        # against a missing radius or coordinate.
+        CheckConstraint(
+            "(latitude IS NULL) = (longitude IS NULL) AND "
+            "(latitude IS NULL) = (radius_meters IS NULL)",
+            name="location_fields_paired",
+        ),
+        CheckConstraint(
+            "latitude IS NULL OR (latitude >= -90 AND latitude <= 90)",
+            name="latitude_range",
+        ),
+        CheckConstraint(
+            "longitude IS NULL OR (longitude >= -180 AND longitude <= 180)",
+            name="longitude_range",
+        ),
+        CheckConstraint(
+            "radius_meters IS NULL OR radius_meters > 0", name="radius_meters_positive"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -40,6 +72,13 @@ class Department(TimestampMixin, db.Model):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=true()
     )
+    # Only meaningful when the organization's location_validation_mode is
+    # FIXED_SITE — NULL otherwise (and NULL is exactly what a taxi/mobile
+    # organization keeps them at, since nothing ever requires setting
+    # these). See app.services.attendance's location-validation logic.
+    latitude: Mapped[object | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[object | None] = mapped_column(Numeric(9, 6), nullable=True)
+    radius_meters: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Department id={self.id} code={self.code!r}>"

@@ -34,6 +34,7 @@ from app.models.attendance_entry import AttendanceEntry
 from app.models.employee import Employee
 from app.models.shift import Shift
 from app.services import audit as audit_service
+from app.services import location as location_service
 from app.services.errors import ValidationError
 from app.services.scheduling import business_date_for, organization_timezone
 
@@ -294,7 +295,11 @@ def _match_shift(organization_id: int, employee_id: int, at: datetime) -> int | 
 
 
 def clock_in(
-    scope: AccessScope, employee_id: int | None = None, at: datetime | None = None
+    scope: AccessScope,
+    employee_id: int | None = None,
+    at: datetime | None = None,
+    latitude=None,
+    longitude=None,
 ) -> AttendanceEntry:
     """Clock an employee in, creating an open attendance entry.
 
@@ -303,6 +308,12 @@ def clock_in(
     manager only within their own departments). ``at`` defaults to now;
     only admin/manager may override it (source becomes ``'manual'``) —
     an employee can never backdate their own clock-in.
+
+    ``latitude``/``longitude`` are optional and only ever checked when
+    the organization's ``location_validation_mode`` requires it (see
+    ``app.services.location.validate_clock_in_location``) — an
+    organization with the default ``NONE`` mode (e.g. taxi) never
+    rejects a clock-in for missing/absent coordinates.
     """
     target_employee_id = employee_id if employee_id is not None else scope.employee_id
     if target_employee_id is None:
@@ -312,7 +323,7 @@ def clock_in(
     if not acting_for_self and scope.role not in ("admin", "manager"):
         abort(403)
 
-    _validate_employee_for_scope(scope, target_employee_id)
+    employee = _validate_employee_for_scope(scope, target_employee_id)
 
     if at is not None and scope.role not in ("admin", "manager"):
         raise ValidationError("Only an admin or manager may set a custom clock-in time.")
@@ -322,16 +333,23 @@ def clock_in(
     _validate_started_at_window(started_at)
     source = "manual" if (at is not None or not acting_for_self) else "web"
 
+    shift_id = _match_shift(scope.organization_id, target_employee_id, started_at)
+    location_service.validate_clock_in_location(
+        scope.organization_id, employee.department_id, shift_id, latitude, longitude
+    )
+
     entry = AttendanceEntry(
         organization_id=scope.organization_id,
         employee_id=target_employee_id,
-        shift_id=_match_shift(scope.organization_id, target_employee_id, started_at),
+        shift_id=shift_id,
         started_at=started_at,
         business_date=business_date_for(started_at, tz),
         break_minutes=0,
         status="open",
         source=source,
         created_by_user_id=scope.user_id,
+        latitude=latitude,
+        longitude=longitude,
     )
     db.session.add(entry)
     _commit_or_raise()
@@ -339,7 +357,11 @@ def clock_in(
 
 
 def clock_out(
-    scope: AccessScope, attendance_entry_id: int, at: datetime | None = None
+    scope: AccessScope,
+    attendance_entry_id: int,
+    at: datetime | None = None,
+    latitude=None,
+    longitude=None,
 ) -> AttendanceEntry:
     """Clock out an open attendance entry.
 
@@ -347,6 +369,14 @@ def clock_out(
     department), may close it. ``at`` defaults to now; only admin/manager
     may override it, same restriction as ``clock_in`` (see module
     docstring). Rejects an entry that's already closed.
+
+    ``latitude``/``longitude`` are validated the same way ``clock_in``'s
+    are (see ``app.services.location.validate_clock_in_location``) —
+    only ever checked when the organization's location_validation_mode
+    requires it. Overwrites (not merges with) any coordinates recorded
+    at clock-in: the pair on the entry always reflects where it was most
+    recently touched, matching how ``started_at``/``ended_at`` already
+    each stand alone rather than needing reconciliation.
 
     Round B fix: a ``needs_review`` entry (auto-flagged by
     ``flag_stale_open_entries`` after being open too long with no
@@ -375,8 +405,15 @@ def clock_out(
     _validate_ended_at_not_in_future(ended_at)
     _validate_ended_after_started(entry.started_at, ended_at)
 
+    employee = db.session.get(Employee, entry.employee_id)
+    location_service.validate_clock_in_location(
+        scope.organization_id, employee.department_id, entry.shift_id, latitude, longitude
+    )
+
     entry.ended_at = ended_at
     entry.status = "closed"
+    entry.latitude = latitude
+    entry.longitude = longitude
     _commit_or_raise()
     return entry
 

@@ -46,11 +46,53 @@ def test_production_config_raises_without_database_url(monkeypatch):
         ProductionConfig()
 
 
+def test_production_config_raises_without_smtp_host(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@localhost/db")
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.setenv("MAIL_FROM_ADDRESS", "noreply@example.com")
+
+    with pytest.raises(RuntimeError):
+        ProductionConfig()
+
+
+def test_production_config_raises_without_mail_from_address(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@localhost/db")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.delenv("MAIL_FROM_ADDRESS", raising=False)
+
+    with pytest.raises(RuntimeError):
+        ProductionConfig()
+
+
+def test_production_config_raises_without_ratelimit_storage_uri(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@localhost/db")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("MAIL_FROM_ADDRESS", "noreply@example.com")
+    monkeypatch.delenv("RATELIMIT_STORAGE_URI", raising=False)
+
+    with pytest.raises(RuntimeError):
+        ProductionConfig()
+
+
 def test_production_config_succeeds_with_required_env(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@localhost/db")
+    # app.services.notifications.send_email requires these two in
+    # production (MAIL_BACKEND is "smtp" there) — same fail-fast
+    # precedent as SECRET_KEY/DATABASE_URL above, so a production
+    # config also needs them to construct successfully.
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("MAIL_FROM_ADDRESS", "noreply@example.com")
+    # app.extensions.limiter requires a shared storage backend in
+    # production — same fail-fast precedent as the vars above.
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://localhost:6379/0")
 
     config = ProductionConfig()
     assert config.SESSION_COOKIE_SECURE is True
     assert config.SESSION_COOKIE_HTTPONLY is True
     assert config.SESSION_COOKIE_SAMESITE == "Lax"
+    assert config.MAIL_BACKEND == "smtp"
+    assert config.TRUST_PROXY is True

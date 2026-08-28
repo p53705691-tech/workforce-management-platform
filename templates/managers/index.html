@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Managers — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Managers</h1>
+      <p class="text-muted">Create manager accounts and assign which departments they manage.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  {% if managers %}
+    <div class="table-wrap table-cards-mobile">
+      <table>
+        <thead>
+          <tr><th>Email</th><th>Departments managed</th><th>Assign a department</th></tr>
+        </thead>
+        <tbody>
+          {% for manager in managers %}
+            <tr>
+              <td data-label="Email">{{ manager.email }}</td>
+              <td data-label="Departments managed">
+                {% set managed = managed_departments.get(manager.id, []) %}
+                {% if managed %}
+                  <div class="row-actions">
+                    {% for department_id in managed %}
+                      <form method="post" action="{{ url_for('managers.unassign_department', user_id=manager.id, department_id=department_id) }}" data-confirm="Remove {{ department_names.get(department_id, 'this department') }} from {{ manager.email }}?">
+                        {{ assign_form.hidden_tag() }}
+                        <button type="submit" class="btn btn-ghost">{{ department_names.get(department_id, "—") }} &times;</button>
+                      </form>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="badge badge-neutral">None yet</span>
+                {% endif %}
+              </td>
+              <td data-label="Assign a department">
+                <form method="post" action="{{ url_for('managers.assign_department', user_id=manager.id) }}" class="filter-form">
+                  {{ assign_form.hidden_tag() }}
+                  {{ assign_form.department_id() }}
+                  <button type="submit" class="btn btn-secondary">Assign</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="state-card">
+      {{ icons.icon("users") }}
+      <h4>No manager accounts yet</h4>
+      <p>Create one below, then assign it to a department.</p>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("users") }} Create a manager account</h2>
+    <p class="text-muted">
+      A manager account is a login only — it is not the same as an Employee record. If this
+      manager is also HR-tracked staff, create their Employee record separately from the
+      Employees page.
+    </p>
+    <form method="post" action="{{ url_for('managers.create_manager') }}" novalidate>
+      {{ create_form.hidden_tag() }}
+      <div class="form-field">
+        {{ create_form.email.label }}
+        {{ create_form.email(autocomplete="off") }}
+        {% for error in create_form.email.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ create_form.password.label }}
+        {{ create_form.password(autocomplete="new-password") }}
+        {% for error in create_form.password.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Create manager account</button>
+    </form>
+  </div>
+{% endblock %}

@@ -7,6 +7,7 @@ maintenance tasks, not user-facing routes, so they live outside
 """
 
 import os
+import random
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ import secrets
 
 import click
 from flask import Flask
+from sqlalchemy import insert
 
 from app.auth.passwords import hash_password
 from app.extensions import db
@@ -38,6 +40,18 @@ from app.services import attendance as attendance_service
 # historical attendance record without needing a per-organization
 # "creation date" lookup.
 _SEED_POLICY_EFFECTIVE_FROM = date(2020, 1, 1)
+
+# Fixed (not randomized) login password for every account `seed
+# benchmark` creates -- deliberately different from `seed demo-scenario`
+# above, which randomizes and never persists its password. A benchmark
+# organization exists purely as disposable load-test fixture data
+# (refuses to run in production, same as demo-scenario) that
+# scripts/benchmark_dashboard.py and scripts/load_test.py both need to
+# log into non-interactively and repeatably across separate process
+# invocations, with no human in the loop to copy a freshly generated
+# secret out of this command's output first. Never used for anything
+# that could contain real people or real credentials.
+_BENCHMARK_PASSWORD = "Benchmark-Seed-Only-2026!"
 
 
 def register_cli(app: Flask) -> None:
@@ -627,4 +641,463 @@ def register_cli(app: Flask) -> None:
             f"{len(new_employee_seed)} employees added across "
             f"{len(new_departments)} new departments. All new logins use "
             f"password {demo_password!r} (shown once here only)."
+        )
+
+    # Department names/codes used by `seed benchmark` below -- a fixed
+    # roster of 6 (within the confirmed 5-8 "realistic department count"
+    # range for this seed) so every benchmark org, regardless of
+    # --employees, has the same department shape and the query-count
+    # benchmark script (scripts/benchmark_dashboard.py) is comparing like
+    # with like across sizes.
+    _BENCHMARK_DEPARTMENTS = [
+        ("Operations", "OPS"),
+        ("Warehouse", "WH"),
+        ("Customer Support", "CS"),
+        ("Sales", "SALES"),
+        ("Logistics", "LOG"),
+        ("Maintenance", "MAINT"),
+    ]
+
+    # (start_hour, duration_hours, break_minutes) cycled across employees
+    # by index, so the seeded organization has a realistic mix of shift
+    # shapes -- including one overnight shift (22:00 -> 06:00 the next
+    # day, per app.models.shift's "one row per shift, even overnight"
+    # convention) and one shorter part-time shift -- rather than every
+    # employee sharing identical hours.
+    _BENCHMARK_SHIFT_TEMPLATES = [
+        (8, 8, 30),
+        (9, 8, 30),
+        (14, 8, 30),
+        (22, 8, 30),
+        (6, 6, 15),
+    ]
+
+    _BENCHMARK_FIRST_NAMES = [
+        "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Jamie", "Avery",
+        "Drew", "Quinn", "Peyton", "Harper", "Rowan", "Skyler", "Reese", "Cameron",
+    ]
+    _BENCHMARK_LAST_NAMES = [
+        "Nguyen", "Brooks", "Diaz", "Thompson", "Patel", "Kim", "Sanchez", "Walker",
+        "Reed", "Collins", "Bailey", "Foster", "Hayes", "Coleman", "Price", "Ward",
+    ]
+
+    @seed_group.command("benchmark")
+    @click.option(
+        "--organization",
+        "organization_slug",
+        required=True,
+        help="Slug of the organization to seed. Created fresh if it does "
+        "not exist yet; refuses to run against an organization that "
+        "already has any departments or employees, so each size gets "
+        "its own dedicated organization (e.g. bench-10, bench-50, ...).",
+    )
+    @click.option(
+        "--employees",
+        "employee_count",
+        required=True,
+        type=click.IntRange(1, 2000),
+        help="Number of employees to bulk-create, spread across a fixed "
+        "roster of 6 departments.",
+    )
+    @click.option(
+        "--days",
+        "days",
+        default=60,
+        show_default=True,
+        type=click.IntRange(1, 365),
+        help="Number of trailing days (including today) of published "
+        "shifts and matching attendance history to generate per employee.",
+    )
+    def seed_benchmark(organization_slug: str, employee_count: int, days: int) -> None:
+        """Bulk-insert a large, realistic organization for query-count and
+        latency benchmarking (``scripts/benchmark_dashboard.py``,
+        ``scripts/load_test.py``) -- up to hundreds of employees with real
+        shift/attendance/pay-rate/leave history, fast.
+
+        Deliberately not built on ``tests/factories.py`` or
+        ``seed-demo-scenario``'s one-row-at-a-time ORM object pattern:
+        this needs to seed up to ~500 employees x tens of days of history
+        (tens of thousands of shift/attendance rows) in one command
+        invocation, so employees/shifts/attendance/pay-rates are all
+        inserted via ``sqlalchemy.insert(Model)`` executed once per table
+        against a list of plain dicts (SQLAlchemy 2.0's "insertmanyvalues"
+        batching, not one INSERT per row) rather than constructing and
+        adding one ORM object per row.
+
+        Every attendance entry is generated with ``shift_id=None`` even
+        though a matching published shift exists for the same employee
+        and day: real shift-matching (``attendance._match_shift``) is a
+        clock-in-time service concern this bulk path deliberately
+        bypasses for speed, and none of the reports this benchmarks
+        (dashboard counts, ``working_hours``, ``labor_cost``,
+        ``reports.overtime_summary``/``hours_trend``) join attendance to
+        shifts -- only the attendance list's optional "late" display does,
+        which simply shows nothing extra for these rows.
+
+        Refuses to run against a production configuration, same
+        FLASK_ENV check and rationale as ``seed demo-scenario`` above
+        (provisions shared-password login accounts).
+        """
+        if os.environ.get("FLASK_ENV", "development") == "production":
+            raise click.ClickException(
+                "This command seeds bulk benchmark data and demo accounts "
+                "with a shared password; it refuses to run against a "
+                "production configuration (FLASK_ENV=production)."
+            )
+
+        organization = (
+            db.session.query(Organization)
+            .filter(Organization.slug == organization_slug)
+            .first()
+        )
+        if organization is None:
+            organization = Organization(
+                name=f"Benchmark Org ({organization_slug})",
+                slug=organization_slug,
+                timezone="UTC",
+                currency_code="USD",
+            )
+            db.session.add(organization)
+            db.session.flush()
+
+        already_seeded = (
+            db.session.query(Department.id)
+            .filter(Department.organization_id == organization.id)
+            .first()
+            is not None
+        ) or (
+            db.session.query(Employee.id)
+            .filter(Employee.organization_id == organization.id)
+            .first()
+            is not None
+        )
+        if already_seeded:
+            raise click.ClickException(
+                f"Organization {organization_slug!r} already has departments "
+                "or employees; this command only seeds a fresh organization "
+                "(use a dedicated slug per benchmark size, e.g. bench-10, "
+                "bench-50, bench-100, bench-250, bench-500)."
+            )
+
+        rng = random.Random(f"benchmark-seed:{organization_slug}")
+
+        demo_password_hash = hash_password(_BENCHMARK_PASSWORD)
+
+        admin_user = User(
+            organization_id=organization.id,
+            employee_id=None,
+            email=f"admin@{organization_slug}.bench.local",
+            password_hash=demo_password_hash,
+            role="admin",
+        )
+        db.session.add(admin_user)
+        db.session.flush()
+
+        # --- departments -------------------------------------------------
+        departments = []
+        for name, code in _BENCHMARK_DEPARTMENTS:
+            department = Department(organization_id=organization.id, name=name, code=code)
+            db.session.add(department)
+            departments.append(department)
+        db.session.flush()
+
+        manager_users = []
+        for department in departments:
+            manager_user = User(
+                organization_id=organization.id,
+                employee_id=None,
+                email=f"manager.{department.code.lower()}@{organization_slug}.bench.local",
+                password_hash=demo_password_hash,
+                role="manager",
+            )
+            db.session.add(manager_user)
+            manager_users.append(manager_user)
+        db.session.flush()
+        for department, manager_user in zip(departments, manager_users):
+            db.session.add(
+                DepartmentManager(
+                    user_id=manager_user.id,
+                    department_id=department.id,
+                    organization_id=organization.id,
+                )
+            )
+
+        # --- overtime policy ----------------------------------------------
+        policy = OvertimePolicy(
+            organization_id=organization.id,
+            name="Default Overtime Policy",
+            daily_threshold_hours=Decimal("8.00"),
+            weekly_threshold_hours=Decimal("40.00"),
+            week_start_day=0,
+            effective_from=_SEED_POLICY_EFFECTIVE_FROM,
+            effective_to=None,
+        )
+        db.session.add(policy)
+        db.session.flush()
+        db.session.add_all(
+            [
+                OvertimeTier(
+                    policy_id=policy.id, scope="daily", tier_order=0,
+                    from_hours=Decimal("0.00"), to_hours=Decimal("2.00"),
+                    multiplier=Decimal("1.50"),
+                ),
+                OvertimeTier(
+                    policy_id=policy.id, scope="daily", tier_order=1,
+                    from_hours=Decimal("2.00"), to_hours=None,
+                    multiplier=Decimal("2.00"),
+                ),
+                OvertimeTier(
+                    policy_id=policy.id, scope="weekly", tier_order=0,
+                    from_hours=Decimal("0.00"), to_hours=None,
+                    multiplier=Decimal("1.50"),
+                ),
+            ]
+        )
+
+        # --- employees (bulk insert) ---------------------------------------
+        today = date.today()
+        hired_on = today - timedelta(days=days + 365)
+        employee_number_width = max(6, len(str(employee_count)))
+        employee_rows = []
+        for i in range(employee_count):
+            department = departments[i % len(departments)]
+            first_name = _BENCHMARK_FIRST_NAMES[i % len(_BENCHMARK_FIRST_NAMES)]
+            last_name = _BENCHMARK_LAST_NAMES[(i // len(_BENCHMARK_FIRST_NAMES)) % len(_BENCHMARK_LAST_NAMES)]
+            employee_rows.append(
+                {
+                    "organization_id": organization.id,
+                    "department_id": department.id,
+                    "employee_number": f"BENCH-{i + 1:0{employee_number_width}d}",
+                    "first_name": first_name,
+                    "last_name": f"{last_name}-{i + 1}",
+                    "employment_status": "active",
+                    "hired_on": hired_on,
+                }
+            )
+        db.session.execute(insert(Employee), employee_rows)
+        db.session.flush()
+
+        # Read the newly inserted rows back rather than trusting bulk
+        # insert result-row order: employee_number is a zero-padded,
+        # strictly increasing sequence, so ordering by it reconstructs
+        # the exact same per-employee order used to build employee_rows
+        # above, needed to line up department_id/pay-rate/shift-template
+        # assignment below without any fragile RETURNING-order assumption.
+        employees = (
+            db.session.query(Employee.id, Employee.department_id)
+            .filter(
+                Employee.organization_id == organization.id,
+                Employee.employee_number.like("BENCH-%"),
+            )
+            .order_by(Employee.employee_number)
+            .all()
+        )
+
+        # Give a handful of employees a real login (one employee-role
+        # account is enough for scripts/benchmark_dashboard.py and
+        # scripts/load_test.py to exercise the Employee Dashboard).
+        if employees:
+            db.session.add(
+                User(
+                    organization_id=organization.id,
+                    employee_id=employees[0].id,
+                    email=f"employee@{organization_slug}.bench.local",
+                    password_hash=demo_password_hash,
+                    role="employee",
+                )
+            )
+
+        # --- pay rates (bulk insert): one per employee, covering the
+        # entire generated history plus a buffer, so no employee hits the
+        # "unconfigured" gap the reports/labor-cost services otherwise
+        # isolate per employee. ---------------------------------------------
+        pay_rate_rows = [
+            {
+                "employee_id": employee.id,
+                "organization_id": organization.id,
+                "hourly_rate": Decimal("15.00") + Decimal(i % 20),
+                "effective_from": hired_on,
+                "effective_to": None,
+            }
+            for i, employee in enumerate(employees)
+        ]
+        db.session.execute(insert(EmployeePayRate), pay_rate_rows)
+
+        # --- shifts + attendance (bulk insert) ------------------------------
+        # Every employee gets one published shift per generated day (own
+        # fixed start-hour/duration template, so shifts never overlap
+        # across days for the same employee) and a matching attendance
+        # entry -- closed for every day except a small, deterministic
+        # scattering of "today" rows left open/needs_review, and a
+        # scattering of employees skipped entirely on "today" to seed a
+        # few genuine "absent" rows, both for dashboard-signal realism.
+        published_at = datetime.combine(
+            today - timedelta(days=days + 14), time(9, 0), tzinfo=timezone.utc
+        )
+        shift_rows = []
+        attendance_rows = []
+        leave_rows = []
+
+        leave_type = LeaveType(
+            organization_id=organization.id, code="VAC", name="Vacation",
+            is_paid=True, requires_approval=True, blocks_scheduling=True, is_active=True,
+        )
+        db.session.add(leave_type)
+        db.session.flush()
+
+        for i, employee in enumerate(employees):
+            start_hour, duration_hours, break_minutes = _BENCHMARK_SHIFT_TEMPLATES[
+                i % len(_BENCHMARK_SHIFT_TEMPLATES)
+            ]
+
+            for day_offset in range(days):
+                business_date = today - timedelta(days=day_offset)
+                starts_at = datetime.combine(
+                    business_date, time(start_hour, 0), tzinfo=timezone.utc
+                )
+                ends_at = starts_at + timedelta(hours=duration_hours)
+
+                shift_rows.append(
+                    {
+                        "organization_id": organization.id,
+                        "department_id": employee.department_id,
+                        "employee_id": employee.id,
+                        "starts_at": starts_at,
+                        "ends_at": ends_at,
+                        "business_date": business_date,
+                        "break_minutes": break_minutes,
+                        "status": "published",
+                        "published_at": published_at,
+                        "created_by_user_id": admin_user.id,
+                    }
+                )
+
+                is_today = day_offset == 0
+                # A small, deterministic scattering of realistic
+                # exceptions, applied only to "today" so historical days
+                # stay uniformly closed (a stale needs_review/open entry
+                # from weeks ago would be an unrelated data-integrity
+                # oddity, not a realistic seed).
+                if is_today and (i % 31) == 0:
+                    continue  # no attendance at all today -> "absent"
+                if is_today and (i % 47) == 0:
+                    attendance_rows.append(
+                        {
+                            "organization_id": organization.id,
+                            "employee_id": employee.id,
+                            "shift_id": None,
+                            "started_at": starts_at,
+                            "ended_at": None,
+                            "business_date": business_date,
+                            "break_minutes": 0,
+                            "status": "needs_review",
+                            "source": "web",
+                            "created_by_user_id": admin_user.id,
+                        }
+                    )
+                    continue
+                if is_today and (i % 23) == 0:
+                    attendance_rows.append(
+                        {
+                            "organization_id": organization.id,
+                            "employee_id": employee.id,
+                            "shift_id": None,
+                            "started_at": starts_at,
+                            "ended_at": None,
+                            "business_date": business_date,
+                            "break_minutes": 0,
+                            "status": "open",
+                            "source": "web",
+                            "created_by_user_id": admin_user.id,
+                        }
+                    )
+                    continue
+
+                attendance_rows.append(
+                    {
+                        "organization_id": organization.id,
+                        "employee_id": employee.id,
+                        "shift_id": None,
+                        "started_at": starts_at,
+                        "ended_at": ends_at,
+                        "business_date": business_date,
+                        "break_minutes": break_minutes,
+                        "status": "closed",
+                        "source": "web",
+                        "created_by_user_id": admin_user.id,
+                    }
+                )
+
+            # A scattering of leave requests -- one per every 15th
+            # employee, cycling through approved/pending/rejected so the
+            # Leave page/report has every status represented.
+            if i % 15 == 0:
+                leave_start_date = today - timedelta(days=rng.randint(1, max(days, 1)))
+                leave_starts_at = datetime.combine(
+                    leave_start_date, time.min, tzinfo=timezone.utc
+                )
+                leave_ends_at = leave_starts_at + timedelta(days=1)
+                cycle = (i // 15) % 3
+                if cycle == 0:
+                    leave_rows.append(
+                        {
+                            "organization_id": organization.id,
+                            "employee_id": employee.id,
+                            "leave_type_id": leave_type.id,
+                            "starts_at": leave_starts_at,
+                            "ends_at": leave_ends_at,
+                            "status": "approved",
+                            "reason": "Benchmark seed data",
+                            "requested_by_user_id": admin_user.id,
+                            "decided_by_user_id": admin_user.id,
+                            "decided_at": leave_starts_at,
+                        }
+                    )
+                elif cycle == 1:
+                    leave_rows.append(
+                        {
+                            "organization_id": organization.id,
+                            "employee_id": employee.id,
+                            "leave_type_id": leave_type.id,
+                            "starts_at": leave_starts_at,
+                            "ends_at": leave_ends_at,
+                            "status": "pending",
+                            "reason": "Benchmark seed data",
+                            "requested_by_user_id": admin_user.id,
+                        }
+                    )
+                else:
+                    leave_rows.append(
+                        {
+                            "organization_id": organization.id,
+                            "employee_id": employee.id,
+                            "leave_type_id": leave_type.id,
+                            "starts_at": leave_starts_at,
+                            "ends_at": leave_ends_at,
+                            "status": "rejected",
+                            "reason": "Benchmark seed data",
+                            "requested_by_user_id": admin_user.id,
+                            "decided_by_user_id": admin_user.id,
+                            "decided_at": leave_starts_at,
+                        }
+                    )
+
+        if shift_rows:
+            db.session.execute(insert(Shift), shift_rows)
+        if attendance_rows:
+            db.session.execute(insert(AttendanceEntry), attendance_rows)
+        if leave_rows:
+            db.session.execute(insert(LeaveRequest), leave_rows)
+
+        db.session.commit()
+        click.echo(
+            f"Seeded benchmark organization {organization_slug!r}: "
+            f"{employee_count} employees across {len(departments)} "
+            f"departments, {days} days of shift/attendance history "
+            f"({len(shift_rows)} shifts, {len(attendance_rows)} attendance "
+            f"entries, {len(leave_rows)} leave requests). Logins (fixed "
+            f"password {_BENCHMARK_PASSWORD!r} -- see this command's "
+            f"docstring for why it's fixed, not randomized): "
+            f"{admin_user.email} (admin), {manager_users[0].email} (manager), "
+            f"employee@{organization_slug}.bench.local (employee)."
         )

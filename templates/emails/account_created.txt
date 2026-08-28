@@ -1,0 +1,14 @@
+Your account is ready — {{ organization_name }}
+
+An account has been created for you on {{ organization_name }}'s
+workforce management system.
+
+Login email: {{ login_email }}
+
+Your password was set by whoever created your account and has been
+shared with you separately. Sign in with it, then change it from your
+account settings if you'd like.
+
+--
+This is an automated message from {{ organization_name }}'s workforce
+management system. Please do not reply to this email.

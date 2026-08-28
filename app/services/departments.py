@@ -17,10 +17,16 @@ from app.models.shift import Shift
 from app.services import audit as audit_service
 from app.services.errors import ValidationError
 
-# name/code are the only fields a caller may change through the generic
-# update; is_active has its own dedicated action (deactivate_department)
-# so that state transition stays a single, auditable code path.
-_UPDATABLE_FIELDS = {"name", "code"}
+# name/code/location fields are the only ones a caller may change
+# through the generic update; is_active has its own dedicated action
+# (deactivate_department) so that state transition stays a single,
+# auditable code path. latitude/longitude/radius_meters are only ever
+# meaningful when the organization's location_validation_mode is
+# FIXED_SITE (app.models.organization) — the DB's own
+# location_fields_paired CHECK (app.models.department) rejects a
+# partially-set trio regardless of what this route/service allows
+# through.
+_UPDATABLE_FIELDS = {"name", "code", "latitude", "longitude", "radius_meters"}
 
 
 def list_departments(scope: AccessScope) -> list[Department]:
@@ -39,15 +45,40 @@ def list_departments(scope: AccessScope) -> list[Department]:
     return query.order_by(Department.name).all()
 
 
-def create_department(scope: AccessScope, name: str, code: str) -> Department:
-    """Create a department in the caller's organization. Admin only."""
+def create_department(
+    scope: AccessScope,
+    name: str,
+    code: str,
+    latitude=None,
+    longitude=None,
+    radius_meters: int | None = None,
+) -> Department:
+    """Create a department in the caller's organization. Admin only.
+
+    ``latitude``/``longitude``/``radius_meters`` are optional and only
+    meaningful once the organization's location_validation_mode is set
+    to FIXED_SITE (app.services.organizations) — same "all three or
+    none" rule as ``update_department``, checked here too.
+    """
     if scope.role != "admin":
         abort(403)
+
+    location_values = (latitude, longitude, radius_meters)
+    if any(v is not None for v in location_values) and not all(
+        v is not None for v in location_values
+    ):
+        raise ValidationError(
+            "Set latitude, longitude, and radius together, or leave all three blank.",
+            field="latitude",
+        )
 
     department = Department(
         organization_id=scope.organization_id,
         name=name,
         code=code,
+        latitude=latitude,
+        longitude=longitude,
+        radius_meters=radius_meters,
     )
     db.session.add(department)
     db.session.flush()
@@ -84,6 +115,19 @@ def update_department(scope: AccessScope, department_id: int, **fields) -> Depar
 
     for field, value in fields.items():
         setattr(department, field, value)
+
+    # Same "all three or none" rule as the DB's location_fields_paired
+    # CHECK (app.models.department) — checked here too so a partial
+    # submission gets a clean, actionable ValidationError instead of a
+    # raw IntegrityError from the route layer's generic fallback.
+    location_values = (department.latitude, department.longitude, department.radius_meters)
+    if any(v is not None for v in location_values) and not all(
+        v is not None for v in location_values
+    ):
+        raise ValidationError(
+            "Set latitude, longitude, and radius together, or leave all three blank.",
+            field="latitude",
+        )
 
     audit_service.record(
         "department_updated",

@@ -11,12 +11,14 @@ from wtforms import (
     DateField,
     DateTimeLocalField,
     DecimalField,
+    FloatField,
     IntegerField,
     PasswordField,
     SelectField,
     StringField,
 )
 from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
+from wtforms.widgets import HiddenInput
 
 
 class LoginForm(FlaskForm):
@@ -49,6 +51,23 @@ class OptionalDecimalField(DecimalField):
 class DepartmentForm(FlaskForm):
     name = StringField("Name", validators=[DataRequired(), Length(max=255)])
     code = StringField("Code", validators=[DataRequired(), Length(max=50)])
+    # Only meaningful when the organization's location_validation_mode is
+    # FIXED_SITE (e.g. a barbershop's branches) — optional everywhere
+    # else, and app.models.department's location_fields_paired CHECK
+    # requires all three or none, so leaving every field blank (the
+    # default for an organization that never enables this) is always
+    # valid. OptionalDecimalField (not the stock DecimalField) so a
+    # blank submission doesn't fail validation before Optional() ever
+    # runs — see that class's own docstring.
+    latitude = OptionalDecimalField(
+        "Latitude", places=6, validators=[Optional(), NumberRange(min=-90, max=90)]
+    )
+    longitude = OptionalDecimalField(
+        "Longitude", places=6, validators=[Optional(), NumberRange(min=-180, max=180)]
+    )
+    radius_meters = IntegerField(
+        "Radius (meters)", validators=[Optional(), NumberRange(min=1, max=50000)]
+    )
 
 
 class _EmployeeFieldsMixin:
@@ -115,10 +134,38 @@ class ChangePasswordForm(FlaskForm):
 
 
 class AdminResetPasswordForm(FlaskForm):
-    """Admin-only: reset a locked-out employee's password directly, since
-    there is no email-sending capability in this application for a
-    self-service "forgot password" link. Same 12-character minimum as
+    """Admin-only: reset a locked-out employee's password directly —
+    still the right tool for an admin acting on an employee's behalf
+    even now that a self-service ``ForgotPasswordForm``/
+    ``ResetPasswordForm`` pair also exists below (e.g. the employee has
+    no email on file, or can't access it). Same 12-character minimum as
     every other password this application sets.
+    """
+
+    new_password = PasswordField(
+        "New password", validators=[DataRequired(), Length(min=12, max=255)]
+    )
+    confirm_new_password = PasswordField(
+        "Confirm new password",
+        validators=[DataRequired(), EqualTo("new_password", message="Passwords must match.")],
+    )
+
+
+class ForgotPasswordForm(FlaskForm):
+    """Self-service: request a password-reset email. No format validator
+    for the same reason as ``LoginForm.email`` — an invalid-format value
+    simply won't match any account, and the response is identical either
+    way (see ``app.auth.service.request_password_reset``).
+    """
+
+    email = StringField("Email", validators=[DataRequired(), Length(max=255)])
+
+
+class ResetPasswordForm(FlaskForm):
+    """Self-service: set a new password from a valid reset link. Same
+    field shape/policy as ``ChangePasswordForm``, minus the current-
+    password re-entry — the reset token itself is the proof of
+    ownership here, not a currently-live session.
     """
 
     new_password = PasswordField(
@@ -158,6 +205,28 @@ class CreateEmployeeAccountForm(FlaskForm):
     password = PasswordField(
         "Initial password", validators=[DataRequired(), Length(min=12, max=255)]
     )
+
+
+class CreateManagerAccountForm(FlaskForm):
+    """Admin-only: create a new manager-role login (see
+    app.services.managers — this account is not tied to an Employee
+    record). Same field shape/policy as CreateEmployeeAccountForm.
+    """
+
+    email = StringField("Email", validators=[DataRequired(), Length(max=255)])
+    password = PasswordField(
+        "Initial password", validators=[DataRequired(), Length(min=12, max=255)]
+    )
+
+
+class AssignDepartmentManagerForm(FlaskForm):
+    """Admin-only: grant a manager access to one department. Choices
+    are populated by the route (they depend on the caller's
+    organization), same pattern as every other dynamic SelectField in
+    this module.
+    """
+
+    department_id = SelectField("Department", coerce=int, validators=[DataRequired()])
 
 
 # HTML's datetime-local input has no timezone concept at all: whatever it
@@ -216,10 +285,22 @@ class AssignEmployeeForm(FlaskForm):
 
 
 class ClockInForm(FlaskForm):
-    """Self-service clock-in: no fields beyond CSRF — always "now", always
-    the caller's own employee record. See ``AdminClockInForm`` for the
-    admin/manager variant with the extra fields those roles may use.
+    """Self-service clock-in: always "now", always the caller's own
+    employee record. See ``AdminClockInForm`` for the admin/manager
+    variant with the extra fields those roles may use.
+
+    ``latitude``/``longitude`` are always present but optional — they're
+    only ever enforced server-side when the organization's
+    ``location_validation_mode`` requires it (see
+    ``app.services.location``); an organization that never enables
+    location validation (the default) ignores them entirely. Populated
+    client-side by ``static/js/main.js``'s ``navigator.geolocation``
+    call when the browser grants permission; clocking in must still work
+    if it's denied/unavailable and the org's mode doesn't require it.
     """
+
+    latitude = FloatField("Latitude", validators=[Optional()], widget=HiddenInput())
+    longitude = FloatField("Longitude", validators=[Optional()], widget=HiddenInput())
 
 
 class AdminClockInForm(ClockInForm):
@@ -242,7 +323,13 @@ class AdminClockInForm(ClockInForm):
 
 
 class ClockOutForm(FlaskForm):
-    """Self-service clock-out: no fields beyond CSRF — always "now"."""
+    """Self-service clock-out: always "now". Same optional
+    ``latitude``/``longitude`` pair as ``ClockInForm`` — see that
+    class's docstring.
+    """
+
+    latitude = FloatField("Latitude", validators=[Optional()], widget=HiddenInput())
+    longitude = FloatField("Longitude", validators=[Optional()], widget=HiddenInput())
 
 
 class AdminClockOutForm(ClockOutForm):
@@ -351,4 +438,33 @@ class CorrectEntryForm(FlaskForm):
     )
     edit_reason = StringField(
         "Reason for edit", validators=[DataRequired(), Length(max=2000)]
+    )
+
+
+class OrganizationSettingsForm(FlaskForm):
+    """Admin-only: the organization-wide clock-in/out location
+    validation mode (see app.models.organization's module docstring).
+    Choices are built from LOCATION_VALIDATION_MODES rather than
+    hardcoded here, so the two can never drift apart.
+    """
+
+    location_validation_mode = SelectField("Location validation", validators=[DataRequired()])
+
+
+class JobLocationForm(FlaskForm):
+    """Admin-only: a named site for MULTI_SITE/SHIFT_JOB_LOCATION
+    clock-in validation (see app.models.organization) — a cleaning
+    company's customer sites, or any business's non-department-tied
+    locations.
+    """
+
+    name = StringField("Name", validators=[DataRequired(), Length(max=255)])
+    latitude = DecimalField(
+        "Latitude", places=6, validators=[DataRequired(), NumberRange(min=-90, max=90)]
+    )
+    longitude = DecimalField(
+        "Longitude", places=6, validators=[DataRequired(), NumberRange(min=-180, max=180)]
+    )
+    radius_meters = IntegerField(
+        "Radius (meters)", validators=[DataRequired(), NumberRange(min=1, max=50000)]
     )

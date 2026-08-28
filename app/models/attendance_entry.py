@@ -31,6 +31,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Numeric,
     SmallInteger,
     Text,
     column,
@@ -102,6 +103,15 @@ class AttendanceEntry(TimestampMixin, db.Model):
         CheckConstraint(
             "source IN ('web', 'manual', 'import')", name="source_valid"
         ),
+        CheckConstraint("(latitude IS NULL) = (longitude IS NULL)", name="location_fields_paired"),
+        CheckConstraint(
+            "latitude IS NULL OR (latitude >= -90 AND latitude <= 90)",
+            name="latitude_range",
+        ),
+        CheckConstraint(
+            "longitude IS NULL OR (longitude >= -180 AND longitude <= 180)",
+            name="longitude_range",
+        ),
         # An edit must always carry who/when/why together — never just one
         # or two of the three.
         CheckConstraint(
@@ -172,6 +182,13 @@ class AttendanceEntry(TimestampMixin, db.Model):
         DateTime(timezone=True), nullable=True
     )
     edit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Captured only at the clock-in/out instant (never continuous
+    # tracking, per the client's explicit constraint) and only ever read
+    # when Organization.location_validation_mode requires it — see
+    # app.services.attendance. NULL for every entry an organization with
+    # location_validation_mode == NONE ever creates.
+    latitude: Mapped[object | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[object | None] = mapped_column(Numeric(9, 6), nullable=True)
 
     def __repr__(self) -> str:
         return f"<AttendanceEntry id={self.id} status={self.status!r}>"

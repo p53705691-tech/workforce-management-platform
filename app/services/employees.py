@@ -4,6 +4,14 @@ Every function takes the caller's ``AccessScope`` and enforces
 authorization itself, independent of whatever the route layer already
 checked (see ``update_employee`` in particular: read-scope and
 write-authorization are checked separately on purpose).
+
+Notification foundation fix — ``create_employee_account`` and
+``reset_employee_account_password`` each send a best-effort email
+through ``app.services.notifications.send_email`` strictly *after*
+their own commit already succeeded (see that module's docstring). The
+email never carries the password itself, new or otherwise; the
+password stays out-of-band, delivered by whoever created/reset the
+account.
 """
 
 from datetime import date, datetime, timezone
@@ -16,8 +24,10 @@ from app.auth.scope import AccessScope, get_scoped_or_404
 from app.extensions import db
 from app.models.department import Department
 from app.models.employee import Employee
+from app.models.organization import Organization
 from app.models.user import User
 from app.services import audit as audit_service
+from app.services import notifications as notification_service
 from app.services.errors import ValidationError
 
 _REQUIRED_CREATE_FIELDS = {
@@ -78,6 +88,38 @@ def _validate_department(
             "Selected department does not exist in this organization.",
             field="department_id",
         )
+
+
+def _notify_employee_account_email(
+    scope: AccessScope, employee: Employee, user: User, template_name: str, subject: str
+) -> None:
+    """Best-effort notification to ``employee`` about their login
+    account (creation or an admin-driven password reset). Silently does
+    nothing if the employee has no email on file (``Employee.email`` is
+    nullable) — the same "skip, don't error" precedent used everywhere
+    else a notification depends on optional contact info (see
+    ``app.services.leave``'s equivalent helpers).
+
+    Never includes the password itself, new or otherwise — see
+    ``app.services.audit``'s module docstring on never dumping a
+    sensitive value, applied the same way here. The email only confirms
+    the account/login email; the actual password is delivered
+    out-of-band by whoever created/reset it.
+
+    Only ever called after the caller's own commit has already
+    succeeded — see ``app.services.notifications``'s module docstring.
+    """
+    if not employee.email:
+        return
+
+    organization = db.session.get(Organization, scope.organization_id)
+    notification_service.send_email(
+        employee.email,
+        subject,
+        template_name,
+        organization_name=organization.name,
+        login_email=user.email,
+    )
 
 
 def list_employees(scope: AccessScope) -> list[Employee]:
@@ -154,6 +196,12 @@ def create_employee_account(
     ``employee_id`` — this function is not a general "create any user"
     tool (admin/manager account provisioning is a separate, unaddressed
     concern outside this workflow).
+
+    After the account is committed, the employee is notified by email
+    (best-effort — see ``app.services.notifications``) that their
+    account is ready; the email never includes the password itself
+    (see ``_notify_employee_account_email``). Silently does nothing if
+    the employee has no email on file.
     """
     if scope.role != "admin":
         abort(403)
@@ -196,6 +244,12 @@ def create_employee_account(
     # One commit covers both the account creation and the audit entry
     # above — see app.services.audit's module docstring.
     db.session.commit()
+
+    # Deliberately after the commit above — see
+    # app.services.notifications's module docstring.
+    _notify_employee_account_email(
+        scope, employee, user, "account_created", "Your account is ready"
+    )
     return user
 
 
@@ -204,18 +258,25 @@ def reset_employee_account_password(
 ) -> User:
     """Admin-only: reset an existing login account's password directly.
 
-    The practical answer to "the employee forgot their password" in
-    this application: there is no email-sending capability anywhere in
-    the codebase, so a self-service "email me a reset link" flow isn't
-    a real option without adding that infrastructure first. An admin
-    setting a new password directly — the employee then signs in with
-    it and may change it themselves via ``auth.service.change_password``
-    — needs no new infrastructure and reuses the same trust model
-    already established by ``create_employee_account``.
+    An admin setting a new password directly — the employee then signs
+    in with it and may change it themselves via
+    ``auth.service.change_password`` — reuses the same trust model
+    already established by ``create_employee_account``. This remains
+    the right tool for an admin acting on an employee's behalf even now
+    that ``app.services.notifications`` exists (see below): a
+    self-service "email me a reset link" flow is a separate,
+    not-yet-built feature (it needs its own token model and route), not
+    something this function does.
 
     Also clears any lockout, so this doubles as the recovery path for
     an account locked out by repeated failed attempts, not only a
     forgotten password.
+
+    After the reset is committed, the employee is notified by email
+    (best-effort — see ``app.services.notifications``) that their
+    password was reset by an admin; the email never includes the new
+    password itself (see ``_notify_employee_account_email``). Silently
+    does nothing if the employee has no email on file.
     """
     if scope.role != "admin":
         abort(403)
@@ -245,6 +306,12 @@ def reset_employee_account_password(
     # One commit covers both the reset and the audit entry above — see
     # app.services.audit's module docstring.
     db.session.commit()
+
+    # Deliberately after the commit above — see
+    # app.services.notifications's module docstring.
+    _notify_employee_account_email(
+        scope, employee, user, "account_password_reset", "Your password was reset"
+    )
     return user
 
 

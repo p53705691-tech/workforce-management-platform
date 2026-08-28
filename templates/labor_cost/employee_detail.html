@@ -24,6 +24,10 @@
   </form>
 
   {% if line_items %}
+    <div class="row-actions">
+      <a class="btn btn-secondary" href="{{ url_for('labor_cost.employee_detail', employee_id=employee.id, start=start.isoformat(), end=end.isoformat(), format='csv') }}">{{ icons.icon("download") }} Export CSV</a>
+      <a class="btn btn-secondary" href="{{ url_for('labor_cost.employee_detail', employee_id=employee.id, start=start.isoformat(), end=end.isoformat(), format='pdf') }}">{{ icons.icon("download") }} Export PDF</a>
+    </div>
     <div class="table-wrap table-cards-mobile">
       <table>
         <thead>

@@ -89,7 +89,12 @@ def create_department():
     if form.validate_on_submit():
         try:
             department_service.create_department(
-                scope, name=form.name.data.strip(), code=form.code.data.strip()
+                scope,
+                name=form.name.data.strip(),
+                code=form.code.data.strip(),
+                latitude=form.latitude.data,
+                longitude=form.longitude.data,
+                radius_meters=form.radius_meters.data,
             )
             flash("Department created.", "success")
             return redirect(url_for("departments.list_departments"))
@@ -134,6 +139,9 @@ def update_department(department_id):
                 department_id,
                 name=form.name.data.strip(),
                 code=form.code.data.strip(),
+                latitude=form.latitude.data,
+                longitude=form.longitude.data,
+                radius_meters=form.radius_meters.data,
             )
             flash("Department updated.", "success")
         except ValidationError as error:

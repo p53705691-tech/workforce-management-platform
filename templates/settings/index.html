@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% import "components/icons.html" as icons %}
+
+{% block title %}Settings — Workforce Management Platform{% endblock %}
+
+{% block page_header %}
+  <div class="page-header">
+    <div class="page-header-text">
+      <h1>Settings</h1>
+      <p class="text-muted">{{ organization.name }}</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("building") }} Clock-in/out location validation</h2>
+    <p class="text-muted">
+      Controls whether employees must be at a known location to clock in or out. Leave
+      set to "None" for a mobile workforce (e.g. a taxi business) — this is never
+      required.
+    </p>
+    <form method="post" action="{{ url_for('settings.update_location_mode') }}" novalidate>
+      {{ mode_form.hidden_tag() }}
+      <div class="form-field">
+        {{ mode_form.location_validation_mode.label }}
+        {{ mode_form.location_validation_mode() }}
+        {% for error in mode_form.location_validation_mode.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">{{ icons.icon("building") }} Job locations</h2>
+    <p class="text-muted">
+      Named sites shifts can be pinned to, used by the "Multiple sites" and "Per-shift
+      job location" validation modes above (e.g. a cleaning company's customer sites).
+    </p>
+
+    {% if job_locations %}
+      <div class="table-wrap table-cards-mobile">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Latitude</th><th>Longitude</th><th>Radius (m)</th></tr>
+          </thead>
+          <tbody>
+            {% for job_location in job_locations %}
+              <tr>
+                <td data-label="Name">{{ job_location.name }}</td>
+                <td data-label="Latitude">{{ job_location.latitude }}</td>
+                <td data-label="Longitude">{{ job_location.longitude }}</td>
+                <td data-label="Radius (m)">{{ job_location.radius_meters }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="state-card">
+        {{ icons.icon("building") }}
+        <h4>No job locations yet</h4>
+        <p>Add one below to use the "Multiple sites" or "Per-shift job location" modes.</p>
+      </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('settings.create_job_location') }}" novalidate>
+      {{ job_location_form.hidden_tag() }}
+      <div class="form-field">
+        {{ job_location_form.name.label }}
+        {{ job_location_form.name() }}
+        {% for error in job_location_form.name.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ job_location_form.latitude.label }}
+        {{ job_location_form.latitude() }}
+        {% for error in job_location_form.latitude.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ job_location_form.longitude.label }}
+        {{ job_location_form.longitude() }}
+        {% for error in job_location_form.longitude.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <div class="form-field">
+        {{ job_location_form.radius_meters.label }}
+        {{ job_location_form.radius_meters() }}
+        {% for error in job_location_form.radius_meters.errors %}
+          <p class="field-error">{{ error }}</p>
+        {% endfor %}
+      </div>
+      <button type="submit" class="btn btn-primary">Add job location</button>
+    </form>
+  </div>
+{% endblock %}

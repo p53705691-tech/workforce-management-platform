@@ -44,6 +44,10 @@
   </form>
 
   {% if requests %}
+    <div class="row-actions">
+      <a class="btn btn-secondary" href="{{ url_for('leave.list_requests', status=status, employee_id=selected_employee_id, format='csv') }}">{{ icons.icon("download") }} Export CSV</a>
+      <a class="btn btn-secondary" href="{{ url_for('leave.list_requests', status=status, employee_id=selected_employee_id, format='pdf') }}">{{ icons.icon("download") }} Export PDF</a>
+    </div>
     <div class="table-wrap table-cards-mobile">
       <table>
         <thead>

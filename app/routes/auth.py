@@ -10,9 +10,15 @@ from flask_login import current_user, login_user, logout_user
 
 from app.auth.decorators import login_required
 from app.auth.redirects import get_safe_redirect_target
-from app.auth.service import authenticate, change_password
+from app.auth.service import (
+    GENERIC_RESET_REQUESTED_MESSAGE,
+    authenticate,
+    change_password,
+    request_password_reset,
+    reset_password,
+)
 from app.extensions import limiter
-from app.forms import ChangePasswordForm, LoginForm
+from app.forms import ChangePasswordForm, ForgotPasswordForm, LoginForm, ResetPasswordForm
 from app.services.errors import ValidationError
 
 auth_bp = Blueprint("auth", __name__)
@@ -89,6 +95,45 @@ def logout():
     logout_user()
     session.clear()
     return redirect(url_for("auth.login"))
+
+
+@auth_bp.route("/forgot-password", methods=["GET", "POST"])
+# Same per-IP throttle as /login's POST — this path also triggers a real
+# email send plus a DB write on every valid submission, and is otherwise
+# unauthenticated and open to anyone.
+@limiter.limit("10 per minute; 50 per hour", methods=["POST"])
+def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for(DEFAULT_LANDING_ENDPOINT))
+
+    form = ForgotPasswordForm()
+    if form.validate_on_submit():
+        request_password_reset(form.email.data.strip())
+        # Always the same message regardless of whether the email
+        # matched a real account — see
+        # app.auth.service.request_password_reset's docstring.
+        flash(GENERIC_RESET_REQUESTED_MESSAGE, "success")
+        return redirect(url_for("auth.login"))
+
+    return render_template("auth/forgot_password.html", form=form)
+
+
+@auth_bp.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password_route(token):
+    if current_user.is_authenticated:
+        return redirect(url_for(DEFAULT_LANDING_ENDPOINT))
+
+    form = ResetPasswordForm()
+    if form.validate_on_submit():
+        try:
+            reset_password(token, form.new_password.data)
+            flash("Your password has been reset. Sign in with your new password.", "success")
+            return redirect(url_for("auth.login"))
+        except ValidationError as error:
+            flash(error.message, "error")
+            return redirect(url_for("auth.login"))
+
+    return render_template("auth/reset_password.html", form=form, token=token)
 
 
 @auth_bp.route("/change-password", methods=["POST"])

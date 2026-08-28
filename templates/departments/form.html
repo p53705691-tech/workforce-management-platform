@@ -16,3 +16,29 @@
     <p class="field-error">{{ error }}</p>
   {% endfor %}
 </div>
+
+{# Only meaningful when the organization's location validation mode
+   (Settings) is Fixed site — leave all three blank otherwise. #}
+<div class="form-field">
+  {{ form.latitude.label }} <span class="text-muted">(optional — fixed-site clock-in only)</span>
+  {{ form.latitude() }}
+  {% for error in form.latitude.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.longitude.label }}
+  {{ form.longitude() }}
+  {% for error in form.longitude.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>
+
+<div class="form-field">
+  {{ form.radius_meters.label }}
+  {{ form.radius_meters() }}
+  {% for error in form.radius_meters.errors %}
+    <p class="field-error">{{ error }}</p>
+  {% endfor %}
+</div>

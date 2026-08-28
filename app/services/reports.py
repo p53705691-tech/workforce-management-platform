@@ -412,19 +412,43 @@ def overtime_summary(
     rate would be worse than the alternative: that employee is returned
     with ``"configured": False`` and no hours figure, and the route
     surfaces this as a per-row note instead of failing the page.
+
+    Fetches every employee's line items in one batched call
+    (``labor_cost.range_cost_for_employees``) instead of looping
+    ``range_cost_for_employee`` once per employee — the N+1 pattern this
+    replaced (three queries per employee, fanning out across an entire
+    department). See that function's docstring for how it guarantees the
+    same per-employee numbers as the old per-employee loop.
+
+    ``range_cost_for_employees`` raises ``ValidationError`` once, up
+    front, for an invalid range (``end_date < start_date``) rather than
+    per employee — unlike the per-employee configuration gap above, a
+    reversed range isn't a fact about any one employee. The old
+    per-employee loop happened to raise (and catch) that same error once
+    per employee, so every row came back ``"configured": False`` for a
+    reversed range; that observable behavior — every employee
+    unconfigured, no exception reaching the route — is preserved
+    explicitly here, since ``overtime_report`` (``app.routes.dashboard``)
+    already has its own dedicated "Invalid date range" UI state that
+    takes precedence over this summary's content and does not expect
+    this function to raise.
     """
     if scope.role not in ("admin", "manager"):
         abort(403)
 
     employees = _department_employees(scope, department_id)
+    employee_ids = [employee.id for employee in employees]
+    try:
+        line_items_by_employee = labor_cost_service.range_cost_for_employees(
+            scope, employee_ids, start_date, end_date
+        )
+    except ValidationError:
+        line_items_by_employee = {employee_id: None for employee_id in employee_ids}
 
     summary = []
     for employee in employees:
-        try:
-            line_items = labor_cost_service.range_cost_for_employee(
-                scope, employee.id, start_date, end_date
-            )
-        except ValidationError:
+        line_items = line_items_by_employee.get(employee.id)
+        if line_items is None:
             summary.append({"employee": employee, "ot_hours": None, "configured": False})
             continue
 
@@ -441,22 +465,25 @@ def hours_trend(
 ) -> list[dict]:
     """Per-day total worked hours for a department across a date range —
     a minimal aggregation answering "how are working hours changing over
-    time", composed from ``working_hours.worked_seconds_by_range`` (one
-    query per employee for the whole range, not per employee per day —
-    see that function's docstring for the N+1 pattern this replaced,
-    measured at a ~2.2s admin dashboard load with just 12 employees / 4
-    departments before the fix). No new hours formula.
+    time", composed from ``working_hours.worked_seconds_by_range_for_employees``
+    (one query for every employee in the department across the whole
+    range, not one query per employee — see that function's docstring
+    for the N+1 pattern this replaced, measured at a ~2.2s admin
+    dashboard load with just 12 employees / 4 departments before the
+    original per-day version of this fix). No new hours formula.
     """
     if scope.role not in ("admin", "manager"):
         abort(403)
 
     employees = _department_employees(scope, department_id)
+    employee_ids = [employee.id for employee in employees]
+
+    seconds_by_employee = working_hours_service.worked_seconds_by_range_for_employees(
+        scope, employee_ids, start_date, end_date
+    )
 
     seconds_by_date: dict[date, int] = {}
-    for employee in employees:
-        employee_seconds_by_date = working_hours_service.worked_seconds_by_range(
-            scope, employee.id, start_date, end_date
-        )
+    for employee_seconds_by_date in seconds_by_employee.values():
         for business_date, seconds in employee_seconds_by_date.items():
             seconds_by_date[business_date] = seconds_by_date.get(business_date, 0) + seconds
 

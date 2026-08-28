@@ -14,7 +14,10 @@ from werkzeug.exceptions import Forbidden
 
 from app.auth.scope import AccessScope
 from app.services import audit as audit_service
+from app.services import labor_cost as labor_cost_service
 from app.services import reports as report_service
+from app.services import working_hours as working_hours_service
+from app.services.errors import ValidationError
 from app.services.scheduling import business_date_for, organization_timezone
 from tests.factories import (
     make_attendance_entry,
@@ -448,6 +451,145 @@ class TestOvertimeSummary:
         for row in summary:
             assert "rate" not in row
             assert "cost" not in row
+
+
+class TestOvertimeSummaryMatchesPerEmployeeReference:
+    """Regression coverage for the Phase 1 performance rewrite: reusing
+    ``labor_cost.range_cost_for_employees`` (one batched call for the
+    whole department) must produce exactly the same per-employee
+    ``ot_hours``/``configured`` values as independently calling
+    ``labor_cost.range_cost_for_employee`` for each employee one at a
+    time -- the pre-batching call shape, kept here purely as a
+    correctness oracle.
+    """
+
+    def test_five_employees_across_a_multi_week_range_match_the_per_employee_reference(
+        self, db_session
+    ):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        _default_policy(db_session, org)
+
+        employees = [
+            make_employee(db_session, organization=org, department=department)
+            for _ in range(5)
+        ]
+        # Every employee but the last gets a pay rate; the last is the
+        # deliberate "unconfigured" case.
+        for index, employee in enumerate(employees[:-1]):
+            make_pay_rate(
+                db_session, organization=org, employee=employee,
+                hourly_rate=Decimal("15.00") + index, effective_from=date(2020, 1, 1),
+            )
+
+        monday = date(2026, 3, 2)
+        end_date = monday + timedelta(days=13)  # two full weeks
+
+        def _entry(employee, business_date, hours):
+            started_at = datetime.combine(
+                business_date, datetime.min.time(), tzinfo=timezone.utc
+            ) + timedelta(hours=8)
+            make_attendance_entry(
+                db_session, organization=org, employee=employee, created_by=admin,
+                started_at=started_at, ended_at=started_at + timedelta(hours=hours),
+                business_date=business_date, status="closed",
+            )
+
+        # Varied hours per employee per day, including some genuine daily
+        # and weekly overtime, so the batched path exercises the same
+        # reclassification logic the single-employee tests already cover.
+        hours_by_employee_index = [8, 9, 10, 7, 8]
+        for day_offset in range(14):
+            business_date = monday + timedelta(days=day_offset)
+            for index, employee in enumerate(employees):
+                hours = hours_by_employee_index[index]
+                if index == len(employees) - 1 and day_offset > 0:
+                    # Unconfigured employee: only worked one day, so the
+                    # ValidationError path is genuinely exercised without
+                    # needing every day configured.
+                    continue
+                _entry(employee, business_date, hours)
+
+        scope = _scope("admin", org.id, user_id=admin.id)
+
+        summary = report_service.overtime_summary(scope, department.id, monday, end_date)
+        by_employee = {row["employee"].id: row for row in summary}
+
+        for employee in employees[:-1]:
+            reference_line_items = labor_cost_service.range_cost_for_employee(
+                scope, employee.id, monday, end_date
+            )
+            reference_ot_hours = sum(
+                (item.hours for item in reference_line_items if item.category != "regular"),
+                Decimal("0"),
+            )
+            assert by_employee[employee.id]["configured"] is True
+            assert by_employee[employee.id]["ot_hours"] == reference_ot_hours
+
+        unconfigured = employees[-1]
+        with pytest.raises(ValidationError):
+            labor_cost_service.range_cost_for_employee(scope, unconfigured.id, monday, end_date)
+        assert by_employee[unconfigured.id]["configured"] is False
+        assert by_employee[unconfigured.id]["ot_hours"] is None
+
+
+class TestHoursTrendMatchesPerEmployeeReference:
+    """Regression coverage mirroring ``TestOvertimeSummaryMatchesPerEmployeeReference``
+    for ``hours_trend``'s batched rewrite: the per-day totals must equal
+    the sum of each employee's own ``working_hours.worked_seconds_by_range``
+    (the pre-batching call shape), independently computed here.
+    """
+
+    def test_per_day_totals_match_summing_each_employees_own_range(self, db_session):
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        employees = [
+            make_employee(db_session, organization=org, department=department)
+            for _ in range(4)
+        ]
+        admin = make_user(db_session, organization=org, role="admin")
+
+        start = date(2026, 4, 1)
+        end = start + timedelta(days=6)
+
+        def _entry(employee, business_date, hours):
+            started_at = datetime.combine(
+                business_date, datetime.min.time(), tzinfo=timezone.utc
+            ) + timedelta(hours=8)
+            make_attendance_entry(
+                db_session, organization=org, employee=employee, created_by=admin,
+                started_at=started_at, ended_at=started_at + timedelta(hours=hours),
+                business_date=business_date, status="closed",
+            )
+
+        hours_by_employee_index = [4, 6, 8, 3]
+        for day_offset in range(7):
+            business_date = start + timedelta(days=day_offset)
+            for index, employee in enumerate(employees):
+                if (index + day_offset) % 3 == 0:
+                    continue  # a scattering of days with no hours at all
+                _entry(employee, business_date, hours_by_employee_index[index])
+
+        scope = _scope("admin", org.id, user_id=admin.id)
+
+        trend = report_service.hours_trend(scope, department.id, start, end)
+        totals_by_date = {row["date"]: row["total_hours"] for row in trend}
+
+        expected_totals_by_date: dict = {}
+        for employee in employees:
+            per_employee = working_hours_service.worked_seconds_by_range(
+                scope, employee.id, start, end
+            )
+            for business_date, seconds in per_employee.items():
+                expected_totals_by_date[business_date] = expected_totals_by_date.get(
+                    business_date, Decimal("0")
+                ) + Decimal(seconds) / Decimal(3600)
+
+        for business_date in totals_by_date:
+            assert totals_by_date[business_date] == expected_totals_by_date.get(
+                business_date, Decimal("0")
+            )
 
 
 class TestMyOvertimeHours:

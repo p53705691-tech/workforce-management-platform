@@ -34,6 +34,14 @@ behavior):
   ``app.services.scheduling._validate_employee_assignable`` (a manager
   acting on an employee outside their managed departments) and raises
   ``ValidationError`` rather than aborting with 403.
+
+Notification foundation fix — ``request_leave``, ``approve_leave``, and
+``reject_leave`` each send a best-effort email (department managers on
+request, the requesting employee on decision) through
+``app.services.notifications.send_email`` strictly *after* their own
+commit already succeeded. See that module's docstring for why a
+notification send is never allowed inside the primary write's
+transaction, and never allowed to raise back into the caller.
 """
 
 from datetime import datetime, timezone
@@ -44,11 +52,15 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth.scope import AccessScope
 from app.extensions import db
+from app.models.department_manager import DepartmentManager
 from app.models.employee import Employee
 from app.models.leave_request import LeaveRequest
 from app.models.leave_type import LeaveType
+from app.models.organization import Organization
+from app.models.user import User
 from app.services import audit as audit_service
 from app.services import availability
+from app.services import notifications as notification_service
 from app.services.errors import ValidationError
 from app.services.scheduling import organization_timezone
 
@@ -214,6 +226,101 @@ def _commit_or_raise_overlap() -> None:
         _translate_leave_integrity_error(error)
 
 
+def _department_manager_emails(organization_id: int, department_id: int) -> list[str]:
+    """Email addresses of every active manager assigned to ``department_id``.
+
+    Same ``department_managers`` join shape as
+    ``app.auth.scope.build_scope_for_user`` (which goes manager ->
+    departments); this is the same link queried the other way around
+    (department -> managers), joined to ``User`` for the address
+    actually needed to notify them. ``User.email`` is ``NOT NULL``
+    (unlike ``Employee.email``), so only ``is_active`` needs checking
+    here — a deactivated manager account is never notified.
+    """
+    return [
+        email
+        for (email,) in db.session.query(User.email)
+        .join(DepartmentManager, DepartmentManager.user_id == User.id)
+        .filter(
+            DepartmentManager.organization_id == organization_id,
+            DepartmentManager.department_id == department_id,
+            User.is_active.is_(True),
+        )
+        .all()
+    ]
+
+
+def _notify_department_managers_of_leave_request(
+    scope: AccessScope,
+    employee: Employee,
+    leave_type: LeaveType,
+    leave_request: LeaveRequest,
+) -> None:
+    """Best-effort notification to every manager of ``employee``'s
+    department. Silently does nothing if the department currently has no
+    manager assigned — a normal, expected state (see
+    ``app.services.departments``), never an error.
+
+    Only ever called after ``request_leave``'s own commit has already
+    succeeded — see ``app.services.notifications``'s module docstring on
+    why a notification send must never be part of the caller's
+    transaction.
+    """
+    manager_emails = _department_manager_emails(scope.organization_id, employee.department_id)
+    if not manager_emails:
+        return
+
+    organization = db.session.get(Organization, scope.organization_id)
+    tz = organization_timezone(scope)
+    context = {
+        "organization_name": organization.name,
+        "employee_name": f"{employee.first_name} {employee.last_name}",
+        "leave_type_name": leave_type.name,
+        "starts_at": leave_request.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+        "ends_at": leave_request.ends_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+        "reason": leave_request.reason,
+    }
+    for manager_email in manager_emails:
+        notification_service.send_email(
+            manager_email,
+            f"New leave request from {context['employee_name']}",
+            "leave_requested",
+            **context,
+        )
+
+
+def _notify_employee_of_leave_decision(scope: AccessScope, leave_request: LeaveRequest) -> None:
+    """Best-effort notification to the requesting employee that their
+    leave request was approved or rejected. Silently does nothing if the
+    employee has no email on file (``Employee.email`` is nullable).
+
+    Only ever called after ``approve_leave``/``reject_leave``'s own
+    commit has already succeeded — see
+    ``app.services.notifications``'s module docstring.
+    """
+    employee = db.session.get(Employee, leave_request.employee_id)
+    if employee is None or not employee.email:
+        return
+
+    leave_type = db.session.get(LeaveType, leave_request.leave_type_id)
+    organization = db.session.get(Organization, scope.organization_id)
+    tz = organization_timezone(scope)
+    context = {
+        "organization_name": organization.name,
+        "leave_type_name": leave_type.name if leave_type else "leave",
+        "starts_at": leave_request.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+        "ends_at": leave_request.ends_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+        "decision_note": leave_request.decision_note,
+    }
+    template_name = "leave_approved" if leave_request.status == "approved" else "leave_rejected"
+    subject = (
+        "Your leave request was approved"
+        if leave_request.status == "approved"
+        else "Your leave request was rejected"
+    )
+    notification_service.send_email(employee.email, subject, template_name, **context)
+
+
 def request_leave(
     scope: AccessScope,
     leave_type_id: int,
@@ -228,6 +335,11 @@ def request_leave(
     Requesting leave on someone else's behalf requires admin/manager (a
     manager only within their own departments) — same on-behalf-of
     pattern as ``app.services.attendance.clock_in``.
+
+    After the request is committed, every active manager of the
+    employee's department is notified by email (best-effort — see
+    ``app.services.notifications``). A department with no manager
+    assigned is not an error; nothing is sent.
     """
     target_employee_id = employee_id if employee_id is not None else scope.employee_id
     if target_employee_id is None:
@@ -237,8 +349,8 @@ def request_leave(
     if not acting_for_self and scope.role not in _DECIDABLE_ROLES:
         abort(403)
 
-    _validate_employee_for_scope(scope, target_employee_id)
-    _validate_leave_type(scope, leave_type_id)
+    employee = _validate_employee_for_scope(scope, target_employee_id)
+    leave_type = _validate_leave_type(scope, leave_type_id)
 
     tz = organization_timezone(scope)
     starts_at = _localize(starts_at, tz)
@@ -272,6 +384,11 @@ def request_leave(
     # One commit covers both the request and the audit entry above — see
     # app.services.audit's module docstring.
     db.session.commit()
+
+    # Deliberately after the commit above, never before or inside it —
+    # see app.services.notifications's module docstring on why an email
+    # send must never be part of the primary write's transaction.
+    _notify_department_managers_of_leave_request(scope, employee, leave_type, leave_request)
     return leave_request
 
 
@@ -396,6 +513,10 @@ def approve_leave(
     manager who happens to also be the requesting employee (compared via
     ``scope.employee_id``, since one user may hold both an admin/manager
     role and a linked employee record) may not approve their own request.
+
+    After the approval is committed, the requesting employee is
+    notified by email (best-effort — see ``app.services.notifications``).
+    Silently does nothing if the employee has no email on file.
     """
     if scope.role not in _DECIDABLE_ROLES:
         abort(403)
@@ -451,6 +572,10 @@ def approve_leave(
     # One commit covers both the approval and the audit entry above —
     # see app.services.audit's module docstring.
     db.session.commit()
+
+    # Deliberately after the commit above — see
+    # app.services.notifications's module docstring.
+    _notify_employee_of_leave_decision(scope, leave_request)
     return leave_request
 
 
@@ -461,6 +586,10 @@ def reject_leave(
 
     ``decision_note`` is mandatory — mirrors
     ``app.services.attendance.correct_entry``'s required ``edit_reason``.
+
+    After the rejection is committed, the requesting employee is
+    notified by email (best-effort — see ``app.services.notifications``).
+    Silently does nothing if the employee has no email on file.
     """
     if scope.role not in _DECIDABLE_ROLES:
         abort(403)
@@ -492,6 +621,10 @@ def reject_leave(
     # One commit covers both the rejection and the audit entry above —
     # see app.services.audit's module docstring.
     db.session.commit()
+
+    # Deliberately after the commit above — see
+    # app.services.notifications's module docstring.
+    _notify_employee_of_leave_decision(scope, leave_request)
     return leave_request
 
 

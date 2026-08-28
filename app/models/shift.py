@@ -62,6 +62,17 @@ class Shift(TimestampMixin, db.Model):
         ForeignKeyConstraint(
             ["created_by_user_id"], ["users.id"], ondelete="RESTRICT"
         ),
+        # Composite FK: an assigned job location (MULTI_SITE /
+        # SHIFT_JOB_LOCATION clock-in validation, see
+        # app.models.organization) must belong to the same organization
+        # as the shift. NULL bypasses this entirely — most shifts never
+        # set one, including every shift for an organization whose
+        # location_validation_mode is NONE/FIXED_SITE/MOBILE.
+        ForeignKeyConstraint(
+            ["job_location_id", "organization_id"],
+            ["job_locations.id", "job_locations.organization_id"],
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("ends_at > starts_at", name="ends_after_starts"),
         CheckConstraint("break_minutes >= 0", name="break_minutes_non_negative"),
         # A break cannot consume the entire shift: the break, in seconds,
@@ -123,6 +134,7 @@ class Shift(TimestampMixin, db.Model):
         DateTime(timezone=True), nullable=True
     )
     created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    job_location_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Shift id={self.id} status={self.status!r}>"

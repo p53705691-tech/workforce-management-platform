@@ -1,16 +1,20 @@
-"""Login business logic: credential checking and lockout.
+"""Login business logic: credential checking, lockout, and password reset.
 
 Kept out of the route handler so the account-lockout rule (a genuine
 business rule, not HTTP plumbing) is independently testable and reusable.
 """
 
+import hashlib
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from app.auth.passwords import hash_password, verify_password
 from app.extensions import db
+from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.services import audit as audit_service
+from app.services import notifications as notification_service
 from app.services.errors import ValidationError
 
 MAX_FAILED_LOGIN_ATTEMPTS = 5
@@ -181,4 +185,132 @@ def change_password(user: User, current_password: str, new_password: str) -> Non
     )
     # One commit covers both the password change and the audit entry
     # above — see app.services.audit's module docstring.
+    db.session.commit()
+
+
+# 256 bits of entropy via secrets.token_urlsafe — the raw token is never
+# stored anywhere (see app.models.password_reset_token's module
+# docstring), only its SHA-256 hash, so this is the sole source of the
+# value that goes into the emailed reset link.
+_RESET_TOKEN_BYTES = 32
+_RESET_TOKEN_LIFETIME = timedelta(minutes=30)
+
+# Same "if that account exists" phrasing as GENERIC_LOGIN_ERROR's
+# anti-enumeration intent above: a request for a nonexistent, inactive,
+# or role-mismatched email must be indistinguishable from a real one
+# that just triggered an email send.
+GENERIC_RESET_REQUESTED_MESSAGE = (
+    "If an account exists for that email, a reset link has been sent."
+)
+
+
+def _hash_reset_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def request_password_reset(email: str) -> None:
+    """Issue a password-reset token and email it, if ``email`` matches a
+    real, active account. Always returns normally either way — the route
+    layer shows ``GENERIC_RESET_REQUESTED_MESSAGE`` regardless of which
+    branch ran here, so a caller can never use response differences to
+    enumerate valid accounts (same anti-enumeration principle as
+    ``authenticate``, just without the timing-parity concern: this path
+    already does real, roughly-constant work — a query plus, on match, a
+    token insert — regardless of outcome, unlike login's Argon2 cost
+    asymmetry).
+    """
+    user = db.session.query(User).filter(User.email == email).one_or_none()
+    if user is None or not user.is_active:
+        return
+
+    raw_token = secrets.token_urlsafe(_RESET_TOKEN_BYTES)
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw_token),
+        expires_at=datetime.now(timezone.utc) + _RESET_TOKEN_LIFETIME,
+    )
+    db.session.add(reset_token)
+    audit_service.record(
+        "password_reset_requested",
+        "user",
+        entity_id=user.id,
+        organization_id=user.organization_id,
+    )
+    # One commit covers both the token insert and the audit entry above —
+    # see app.services.audit's module docstring. The email is sent only
+    # after this commit succeeds — see app.services.notifications's
+    # module docstring on why a notification must never be sent from
+    # inside an uncommitted transaction.
+    db.session.commit()
+
+    notification_service.send_email(
+        user.email,
+        "Reset your password",
+        "password_reset",
+        organization_name=_organization_name(user.organization_id),
+        login_email=user.email,
+        raw_token=raw_token,
+    )
+
+
+def _organization_name(organization_id: int) -> str:
+    # Imported here, not at module level: app.services.scheduling imports
+    # this module transitively via other services, and organization.py
+    # itself has no such cycle, but this keeps the pattern consistent
+    # with app.services.audit.list_entries's identical local-import note.
+    from app.models.organization import Organization
+
+    organization = db.session.get(Organization, organization_id)
+    return organization.name if organization is not None else ""
+
+
+def reset_password(raw_token: str, new_password: str) -> None:
+    """Redeem a password-reset token, setting ``new_password`` for the
+    account it was issued to.
+
+    Raises ``ValidationError`` for any invalid token (never found,
+    already used, or expired) with one single generic message — same
+    anti-enumeration principle as everywhere else in this module: a
+    caller must not be able to distinguish "this token never existed"
+    from "this token expired ten minutes ago."
+
+    Also clears any lockout and bumps ``password_changed_at``, which
+    ``app.models.user.load_user`` already treats as the enforcement point
+    for invalidating every other still-live session for this account —
+    the same mechanism ``change_password`` above relies on.
+    """
+    token_hash = _hash_reset_token(raw_token)
+    reset_token = (
+        db.session.query(PasswordResetToken)
+        .filter(PasswordResetToken.token_hash == token_hash)
+        .one_or_none()
+    )
+
+    invalid_message = "This password reset link is invalid or has expired."
+    now = datetime.now(timezone.utc)
+    if (
+        reset_token is None
+        or reset_token.used_at is not None
+        or reset_token.expires_at <= now
+    ):
+        raise ValidationError(invalid_message)
+
+    user = db.session.get(User, reset_token.user_id)
+    if user is None or not user.is_active:
+        raise ValidationError(invalid_message)
+
+    reset_token.used_at = now
+    user.password_hash = hash_password(new_password)
+    user.password_changed_at = now
+    user.failed_login_count = 0
+    user.locked_until = None
+    audit_service.record(
+        "password_reset_completed",
+        "user",
+        entity_id=user.id,
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+    )
+    # One commit covers the token consumption, the password change, and
+    # the audit entry above — see app.services.audit's module docstring.
     db.session.commit()

@@ -64,6 +64,7 @@
     {{ nav.nav_group("Reports", sub=true, id="nav-group-reports") }}
     <ul class="nav-list nav-sublist" aria-labelledby="nav-group-reports">
       {{ nav.nav_link("dashboard.overtime_report", "Overtime Report", icon="clock") }}
+      {{ nav.nav_link("dashboard.working_hours_report", "Working Hours", icon="activity") }}
       {{ nav.nav_link("dashboard.hours_trend_report", "Hours Trend", icon="activity") }}
       {{ nav.nav_link("labor_cost.department_totals", "Labor Cost", icon="coins", extra_endpoints=("labor_cost.employee_detail",)) }}
     </ul>
@@ -74,6 +75,8 @@
     <ul class="nav-list" aria-labelledby="nav-group-admin">
       {{ nav.nav_link("audit.recent_activity", "Recent Activity", icon="activity") }}
       {{ nav.nav_link("audit.list_entries", "Audit Log", icon="list") }}
+      {{ nav.nav_link("managers.index", "Managers", icon="users") }}
+      {{ nav.nav_link("settings.index", "Settings", icon="building") }}
     </ul>
   {% endif %}
 

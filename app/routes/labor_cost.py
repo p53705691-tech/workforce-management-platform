@@ -26,9 +26,12 @@ from flask_login import current_user
 
 from app.auth.decorators import role_required
 from app.auth.scope import build_scope_for_user
+from app.routes import csv_response, pdf_response
 from app.services import departments as department_service
 from app.services import employees as employee_service
+from app.services import exports as export_service
 from app.services import labor_cost as labor_cost_service
+from app.services import pdf_reports as pdf_report_service
 from app.services import reports as report_service
 from app.services.errors import ValidationError
 
@@ -78,6 +81,15 @@ def department_totals():
     end = _parse_date(request.args.get("end"), default_end)
     start, end = _clamp_range(start, end)
     department_id = request.args.get("department_id", type=int)
+
+    export_format = request.args.get("format")
+    if export_format and department_id is not None:
+        if export_format == "csv":
+            filename, csv_text = export_service.labor_cost_csv(scope, department_id, start, end)
+            return csv_response(filename, csv_text)
+        if export_format == "pdf":
+            pdf_bytes = pdf_report_service.labor_cost_pdf(scope, department_id, start, end)
+            return pdf_response(f"labor_cost_{start.isoformat()}_{end.isoformat()}.pdf", pdf_bytes)
 
     departments = department_service.list_departments(scope)
     total = None
@@ -135,6 +147,14 @@ def employee_detail(employee_id):
     start = _parse_date(request.args.get("start"), default_start)
     end = _parse_date(request.args.get("end"), default_end)
     start, end = _clamp_range(start, end)
+
+    export_format = request.args.get("format")
+    if export_format == "csv":
+        filename, csv_text = export_service.admin_labor_cost_csv(scope, employee_id, start, end)
+        return csv_response(filename, csv_text)
+    if export_format == "pdf":
+        pdf_bytes = pdf_report_service.admin_labor_cost_pdf(scope, employee_id, start, end)
+        return pdf_response(f"labor_cost_payroll_{start.isoformat()}_{end.isoformat()}.pdf", pdf_bytes)
 
     line_items = []
     try:

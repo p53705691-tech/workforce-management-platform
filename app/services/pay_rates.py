@@ -216,6 +216,69 @@ def resolve_pay_rates_by_range(
     return rate_by_date
 
 
+def resolve_pay_rates_by_range_for_employees(
+    employee_ids: list[int], organization_id: int, start_date: date, end_date: date
+) -> dict[int, dict[date, Decimal]]:
+    """``resolve_pay_rates_by_range`` for every employee in ``employee_ids``
+    at once: one query for every employee's rate rows overlapping the
+    range, instead of one query per employee.
+
+    Consumed by ``labor_cost.range_cost_for_employees`` (the batched
+    sibling of ``range_cost_for_employee``) — same authorization posture
+    as ``resolve_pay_rates_by_range``: deliberately takes no
+    ``AccessScope`` and does no authorization of its own, since the
+    caller has already validated the caller may see these employees'
+    hours before ever reaching here.
+
+    Same per-date matching logic as ``resolve_pay_rates_by_range``,
+    applied per employee against that employee's own subset of the
+    fetched rows, so a given employee_id's sub-dict here is always
+    identical to what a direct ``resolve_pay_rates_by_range`` call for
+    that one employee_id would return. An employee id with no rate rows
+    covering the range at all still gets a key in the returned dict,
+    mapped to an empty ``{}``.
+    """
+    if not employee_ids:
+        return {}
+
+    rows = (
+        db.session.query(EmployeePayRate)
+        .filter(
+            EmployeePayRate.employee_id.in_(employee_ids),
+            EmployeePayRate.organization_id == organization_id,
+            EmployeePayRate.effective_from <= end_date,
+            or_(
+                EmployeePayRate.effective_to.is_(None),
+                EmployeePayRate.effective_to >= start_date,
+            ),
+        )
+        .all()
+    )
+
+    rows_by_employee: dict[int, list[EmployeePayRate]] = {
+        employee_id: [] for employee_id in employee_ids
+    }
+    for row in rows:
+        rows_by_employee[row.employee_id].append(row)
+
+    rate_by_employee: dict[int, dict[date, Decimal]] = {}
+    one_day = timedelta(days=1)
+    for employee_id, employee_rows in rows_by_employee.items():
+        rate_by_date: dict[date, Decimal] = {}
+        if employee_rows:
+            business_date = start_date
+            while business_date <= end_date:
+                for row in employee_rows:
+                    if row.effective_from <= business_date and (
+                        row.effective_to is None or row.effective_to >= business_date
+                    ):
+                        rate_by_date[business_date] = row.hourly_rate
+                        break
+                business_date += one_day
+        rate_by_employee[employee_id] = rate_by_date
+    return rate_by_employee
+
+
 def list_pay_rate_history(scope: AccessScope, employee_id: int) -> list[EmployeePayRate]:
     """Full rate history for an employee, most recent first. Admin only —
     managers never see this, per confirmed rule A4.

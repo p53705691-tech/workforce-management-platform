@@ -1,5 +1,7 @@
 """Integration tests for app.services.employees — DB + authorization."""
 
+import smtplib
+
 import pytest
 from werkzeug.exceptions import Forbidden, NotFound
 
@@ -350,3 +352,158 @@ def test_terminate_employee_with_no_linked_login_still_succeeds(db_session):
     )
 
     assert terminated.employment_status == "terminated"
+
+
+# --- Notification wiring (app.services.notifications) -----------------
+#
+# create_employee_account/reset_employee_account_password each notify
+# the employee: a missing Employee.email is skipped silently, and a
+# simulated SMTP failure must never prevent the primary write from
+# committing (see app.services.notifications's module docstring).
+
+
+def test_create_employee_account_notifies_the_employee(db_session, monkeypatch):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(
+        db_session, organization=org, department=department, email="jane@example.com"
+    )
+    admin = make_user(db_session, organization=org, role="admin")
+
+    sent = []
+    monkeypatch.setattr(
+        employee_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append((to, subject, template_name, ctx)),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    employee_service.create_employee_account(
+        scope, employee.id, "jane.login@example.com", "correct horse battery staple"
+    )
+
+    assert len(sent) == 1
+    to, subject, template_name, context = sent[0]
+    assert to == "jane@example.com"
+    assert template_name == "account_created"
+    assert context["login_email"] == "jane.login@example.com"
+    # The password itself must never appear anywhere in the notification.
+    assert "correct horse battery staple" not in str(context)
+
+
+def test_create_employee_account_skips_notification_silently_without_an_email(
+    db_session, monkeypatch
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    assert employee.email is None
+    admin = make_user(db_session, organization=org, role="admin")
+
+    sent = []
+    monkeypatch.setattr(
+        employee_service.notification_service,
+        "send_email",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    user = employee_service.create_employee_account(
+        scope, employee.id, "jane.login@example.com", "correct horse battery staple"
+    )
+
+    assert user.email == "jane.login@example.com"
+    assert sent == []
+
+
+def test_reset_employee_account_password_notifies_the_employee(db_session, monkeypatch):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(
+        db_session, organization=org, department=department, email="jane@example.com"
+    )
+    admin = make_user(db_session, organization=org, role="admin")
+    make_user(
+        db_session,
+        organization=org,
+        role="employee",
+        employee_id=employee.id,
+        email="jane.login@example.com",
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        employee_service.notification_service,
+        "send_email",
+        lambda to, subject, template_name, **ctx: sent.append((to, subject, template_name, ctx)),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    employee_service.reset_employee_account_password(
+        scope, employee.id, "another correct horse battery staple"
+    )
+
+    assert len(sent) == 1
+    to, subject, template_name, context = sent[0]
+    assert to == "jane@example.com"
+    assert template_name == "account_password_reset"
+    assert context["login_email"] == "jane.login@example.com"
+    assert "another correct horse battery staple" not in str(context)
+
+
+def test_reset_employee_account_password_skips_notification_silently_without_an_email(
+    db_session, monkeypatch
+):
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(db_session, organization=org, department=department)
+    assert employee.email is None
+    admin = make_user(db_session, organization=org, role="admin")
+    make_user(db_session, organization=org, role="employee", employee_id=employee.id)
+
+    sent = []
+    monkeypatch.setattr(
+        employee_service.notification_service,
+        "send_email",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    reset_user = employee_service.reset_employee_account_password(
+        scope, employee.id, "another correct horse battery staple"
+    )
+
+    assert reset_user is not None
+    assert sent == []
+
+
+def test_reset_employee_account_password_succeeds_even_when_the_smtp_server_is_unreachable(
+    db_session, app, monkeypatch
+):
+    """The primary write (resetting the password) must commit and be
+    returned to the caller even if the notification email's SMTP send
+    fails outright — see app.services.notifications's module docstring.
+    """
+    org = make_organization(db_session)
+    department = make_department(db_session, organization=org)
+    employee = make_employee(
+        db_session, organization=org, department=department, email="jane@example.com"
+    )
+    admin = make_user(db_session, organization=org, role="admin")
+    make_user(db_session, organization=org, role="employee", employee_id=employee.id)
+
+    monkeypatch.setitem(app.config, "MAIL_BACKEND", "smtp")
+    monkeypatch.setitem(app.config, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setitem(app.config, "MAIL_FROM_ADDRESS", "noreply@acme.test")
+
+    def _boom(*args, **kwargs):
+        raise TimeoutError("smtp server unreachable")
+
+    monkeypatch.setattr(smtplib, "SMTP", _boom)
+
+    scope = _scope("admin", org.id, user_id=admin.id)
+    reset_user = employee_service.reset_employee_account_password(
+        scope, employee.id, "another correct horse battery staple"
+    )
+
+    assert reset_user.password_hash is not None

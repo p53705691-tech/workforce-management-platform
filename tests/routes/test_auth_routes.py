@@ -427,3 +427,132 @@ def test_anonymous_user_cannot_change_password(client, db_session):
 
     assert response.status_code == 302
     assert "/login" in response.headers["Location"]
+
+
+def _requested_reset_token_via_route(client, monkeypatch, email):
+    """Same capture technique as
+    tests/integration/test_auth_service.py's ``_requested_reset_token``,
+    driven through the HTTP route instead of calling the service
+    directly.
+    """
+    captured = {}
+
+    def _fake_send_email(to, subject, template_name, **context):
+        captured["raw_token"] = context["raw_token"]
+
+    monkeypatch.setattr(
+        "app.auth.service.notification_service.send_email", _fake_send_email
+    )
+    client.post("/forgot-password", data={"email": email})
+    return captured.get("raw_token")
+
+
+def test_forgot_password_shows_the_same_generic_message_regardless_of_match(
+    client, db_session, monkeypatch
+):
+    """Anti-enumeration: a real account and a nonexistent one must
+    produce an identical response.
+    """
+    user = _make_login_user(db_session)
+
+    response_known = client.post(
+        "/forgot-password", data={"email": user.email}, follow_redirects=True
+    )
+    response_unknown = client.post(
+        "/forgot-password",
+        data={"email": "nobody@example.com"},
+        follow_redirects=True,
+    )
+
+    expected = b"If an account exists for that email, a reset link has been sent."
+    assert expected in response_known.data
+    assert expected in response_unknown.data
+
+
+def test_forgot_password_then_reset_password_changes_the_password(
+    client, db_session, monkeypatch
+):
+    from app.auth.passwords import verify_password
+    from app.models.user import User
+
+    user = _make_login_user(db_session)
+    raw_token = _requested_reset_token_via_route(client, monkeypatch, user.email)
+    assert raw_token is not None
+
+    response = client.post(
+        f"/reset-password/{raw_token}",
+        data={
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    updated = db_session.query(User).filter_by(id=user.id).one()
+    assert verify_password(updated.password_hash, "a-brand-new-password")
+
+    # The new password actually signs in.
+    login_response = client.post(
+        "/login", data={"email": user.email, "password": "a-brand-new-password"}
+    )
+    assert login_response.status_code == 302
+
+
+def test_reset_password_with_invalid_token_shows_generic_error(client, db_session):
+    response = client.post(
+        "/reset-password/not-a-real-token",
+        data={
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"invalid or has expired" in response.data
+
+
+def test_reset_password_token_cannot_be_reused(client, db_session, monkeypatch):
+    user = _make_login_user(db_session)
+    raw_token = _requested_reset_token_via_route(client, monkeypatch, user.email)
+
+    client.post(
+        f"/reset-password/{raw_token}",
+        data={
+            "new_password": "a-brand-new-password",
+            "confirm_new_password": "a-brand-new-password",
+        },
+    )
+    second_response = client.post(
+        f"/reset-password/{raw_token}",
+        data={
+            "new_password": "yet-another-password",
+            "confirm_new_password": "yet-another-password",
+        },
+        follow_redirects=True,
+    )
+
+    assert b"invalid or has expired" in second_response.data
+
+
+def test_forgot_password_missing_csrf_token_is_rejected(client, db_session, app):
+    user = _make_login_user(db_session)
+
+    app.config["WTF_CSRF_ENABLED"] = True
+    try:
+        response = client.post("/forgot-password", data={"email": user.email})
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = False
+
+    assert response.status_code == 400
+
+
+def test_authenticated_user_visiting_forgot_password_is_redirected(client, db_session):
+    user = _make_login_user(db_session)
+    client.post("/login", data={"email": user.email, "password": PASSWORD})
+
+    response = client.get("/forgot-password")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/"

@@ -1,0 +1,12 @@
+Your leave request was approved — {{ organization_name }}
+
+Your {{ leave_type_name }} leave request has been approved.
+
+From: {{ starts_at }}
+To:   {{ ends_at }}
+{% if decision_note %}
+Note from your manager: {{ decision_note }}
+{% endif %}
+--
+This is an automated message from {{ organization_name }}'s workforce
+management system. Please do not reply to this email.

@@ -292,51 +292,43 @@ def _week_start(business_date: date, week_start_day: int) -> date:
     return business_date - timedelta(days=offset)
 
 
-def range_cost_for_employee(
-    scope: AccessScope, employee_id: int, start_date: date, end_date: date
+def _compute_range_cost(
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    worked_seconds_by_date: dict[date, int],
+    rate_by_date: dict[date, Decimal],
+    policy_by_date: dict,
 ) -> list[LineItem]:
-    """One ``LineItem`` per pay-rate bucket for every day in
+    """The pure, query-free computation core of ``range_cost_for_employee``:
+    one ``LineItem`` per pay-rate bucket for every day in
     ``[start_date, end_date]``, plus a weekly-OT ``LineItem`` per tier
-    for each week the range touches.
+    for each week the range touches, given the three DB-sourced lookups
+    (each already covering a window padded by ``_WEEK_EXPANSION_PAD`` on
+    both sides — see ``range_cost_for_employee``) the caller resolved.
+
+    Split out from ``range_cost_for_employee`` so ``range_cost_for_employees``
+    (the batched, multi-employee entry point ``reports.overtime_summary``
+    calls once per department instead of once per employee) can reuse
+    the *exact same* weekly-OT reclassification/proration logic against
+    lookups it fetched in bulk across every requested employee, instead
+    of duplicating this logic against per-employee queries. Both
+    functions funnel through this one, so a given employee's result is
+    guaranteed identical regardless of which one was called.
 
     Correctly computing weekly overtime for a given week requires that
     week's *entire* 7-day regular-hours total (per M5), not just
     whichever days happen to fall inside the requested range — so a
     week only partially covered by ``[start_date, end_date]`` still has
-    its other days' pay rate and overtime policy resolved internally
-    (raising ``ValidationError`` if either is missing for one of those
-    days too, even though no ``LineItem`` for that day is ever returned).
-    See the module docstring for how weekly-OT hours are reclassified out
-    of the daily "regular" bucket to avoid double-paying the same hour,
-    and for why the resulting weekly-OT ``LineItem``\\ s are prorated to
-    only the portion of reclassified hours whose source day actually
-    falls inside ``[start_date, end_date]``.
+    its other days' pay rate and overtime policy resolved (raising
+    ``ValidationError`` if either is missing for one of those days too,
+    even though no ``LineItem`` for that day is ever returned). See the
+    module docstring for how weekly-OT hours are reclassified out of the
+    daily "regular" bucket to avoid double-paying the same hour, and for
+    why the resulting weekly-OT ``LineItem``\\ s are prorated to only the
+    portion of reclassified hours whose source day actually falls inside
+    ``[start_date, end_date]``.
     """
-    if end_date < start_date:
-        raise ValidationError("end_date must be on or after start_date.")
-
-    # A week's worth of expansion (below) can reach at most 6 days before
-    # ``start_date`` or after ``end_date`` (a week is 7 days, whatever
-    # ``week_start_day`` turns out to be) -- pre-fetching that whole
-    # padded window in three queries total, once, replaces what used to
-    # be three queries *per day* (worked hours, pay rate, overtime
-    # policy) fanning out across however many days a request touched.
-    # This is the fix for a measured ~2.2s admin dashboard load with
-    # just 12 employees / 4 departments -- see
-    # ``working_hours.worked_seconds_by_range``'s docstring for the full
-    # picture across all three batched lookups.
-    fetch_start = start_date - _WEEK_EXPANSION_PAD
-    fetch_end = end_date + _WEEK_EXPANSION_PAD
-    worked_seconds_by_date = working_hours_service.worked_seconds_by_range(
-        scope, employee_id, fetch_start, fetch_end
-    )
-    rate_by_date = pay_rate_service.resolve_pay_rates_by_range(
-        employee_id, scope.organization_id, fetch_start, fetch_end
-    )
-    policy_by_date = overtime_service.resolve_policies_by_range(
-        scope.organization_id, fetch_start, fetch_end
-    )
-
     breakdown_cache: dict[date, tuple] = {}
 
     def get_breakdown(business_date: date):
@@ -503,6 +495,121 @@ def range_cost_for_employee(
     return line_items
 
 
+def range_cost_for_employee(
+    scope: AccessScope, employee_id: int, start_date: date, end_date: date
+) -> list[LineItem]:
+    """One ``LineItem`` per pay-rate bucket for every day in
+    ``[start_date, end_date]``, plus a weekly-OT ``LineItem`` per tier
+    for each week the range touches.
+
+    Fetches the three lookups ``_compute_range_cost`` needs (worked
+    seconds, pay rate, overtime policy, each for a window padded by
+    ``_WEEK_EXPANSION_PAD``) for this one employee, then delegates the
+    actual weekly-OT reclassification/proration math to
+    ``_compute_range_cost`` — see that function's docstring for why the
+    computation itself lives there instead of here, and the module
+    docstring for the reclassification/proration rules themselves.
+    """
+    if end_date < start_date:
+        raise ValidationError("end_date must be on or after start_date.")
+
+    # A week's worth of expansion (below) can reach at most 6 days before
+    # ``start_date`` or after ``end_date`` (a week is 7 days, whatever
+    # ``week_start_day`` turns out to be) -- pre-fetching that whole
+    # padded window in three queries total, once, replaces what used to
+    # be three queries *per day* (worked hours, pay rate, overtime
+    # policy) fanning out across however many days a request touched.
+    # This is the fix for a measured ~2.2s admin dashboard load with
+    # just 12 employees / 4 departments -- see
+    # ``working_hours.worked_seconds_by_range``'s docstring for the full
+    # picture across all three batched lookups.
+    fetch_start = start_date - _WEEK_EXPANSION_PAD
+    fetch_end = end_date + _WEEK_EXPANSION_PAD
+    worked_seconds_by_date = working_hours_service.worked_seconds_by_range(
+        scope, employee_id, fetch_start, fetch_end
+    )
+    rate_by_date = pay_rate_service.resolve_pay_rates_by_range(
+        employee_id, scope.organization_id, fetch_start, fetch_end
+    )
+    policy_by_date = overtime_service.resolve_policies_by_range(
+        scope.organization_id, fetch_start, fetch_end
+    )
+    return _compute_range_cost(
+        employee_id, start_date, end_date, worked_seconds_by_date, rate_by_date, policy_by_date
+    )
+
+
+def range_cost_for_employees(
+    scope: AccessScope, employee_ids: list[int], start_date: date, end_date: date
+) -> dict[int, list[LineItem] | None]:
+    """Batched, multi-employee form of ``range_cost_for_employee`` — the
+    actual fix for the N+1 pattern ``reports.overtime_summary`` used to
+    have (three queries per employee: worked seconds, pay rate, overtime
+    policy, fanning out once per employee in a department).
+
+    Fetches each of those three lookups once for every requested
+    ``employee_id`` instead: one query spanning every id for worked
+    seconds (``working_hours.worked_seconds_by_range_for_employees``),
+    one for pay rates (``pay_rates.resolve_pay_rates_by_range_for_employees``),
+    and the organization's overtime policy exactly once regardless of
+    employee count (``overtime.resolve_policies_by_range`` is already
+    organization-scoped, not per-employee, so calling it once per
+    employee inside a loop — as the old per-employee call chain did —
+    was redundant work fetching the identical rows every time). Each
+    employee's own slice of these three lookups is then run through
+    ``_compute_range_cost`` — the exact same weekly-OT reclassification
+    code ``range_cost_for_employee`` itself calls — so a given employee's
+    result here is guaranteed numerically identical to calling
+    ``range_cost_for_employee`` for that employee alone.
+
+    Returns one entry per requested ``employee_id``. An employee who
+    genuinely worked hours with no pay rate or overtime policy configured
+    for some day in the range maps to ``None`` — the same gap
+    ``range_cost_for_employee`` reports by raising ``ValidationError`` —
+    rather than letting one employee's gap raise out of the whole batch
+    and lose every other employee's already-computed result. This
+    mirrors ``reports.overtime_summary``'s and ``department_cost_summary``'s
+    existing per-employee error-isolation pattern, just applied here
+    since the underlying computation is now shared across employees in
+    one call instead of one independent call per employee.
+    """
+    if not employee_ids:
+        return {}
+    if end_date < start_date:
+        raise ValidationError("end_date must be on or after start_date.")
+
+    fetch_start = start_date - _WEEK_EXPANSION_PAD
+    fetch_end = end_date + _WEEK_EXPANSION_PAD
+    worked_seconds_by_employee = working_hours_service.worked_seconds_by_range_for_employees(
+        scope, employee_ids, fetch_start, fetch_end
+    )
+    rate_by_employee = pay_rate_service.resolve_pay_rates_by_range_for_employees(
+        employee_ids, scope.organization_id, fetch_start, fetch_end
+    )
+    # Organization-scoped, not per-employee -- fetched exactly once for
+    # the whole batch and reused for every employee's computation below,
+    # unlike the per-employee call chain this replaces (which resolved
+    # the identical policy rows once per employee).
+    policy_by_date = overtime_service.resolve_policies_by_range(
+        scope.organization_id, fetch_start, fetch_end
+    )
+
+    results: dict[int, list[LineItem] | None] = {}
+    for employee_id in employee_ids:
+        try:
+            results[employee_id] = _compute_range_cost(
+                employee_id,
+                start_date,
+                end_date,
+                worked_seconds_by_employee.get(employee_id, {}),
+                rate_by_employee.get(employee_id, {}),
+                policy_by_date,
+            )
+        except ValidationError:
+            results[employee_id] = None
+    return results
+
+
 def department_cost_summary(
     scope: AccessScope, department_id: int, start_date: date, end_date: date
 ) -> DepartmentCostSummary:
@@ -567,12 +674,29 @@ def department_cost_summary(
         .all()
     ]
 
+    # Batched (one set of queries for the whole department) instead of
+    # calling range_cost_for_employee once per employee — that
+    # per-employee loop was the dashboard's remaining N+1 at
+    # employee-count scale even after the earlier fix to
+    # overtime_summary/hours_trend: department_cost_summary runs once
+    # per department from app.routes.dashboard, so with department_id
+    # fixed but employee count growing, the old loop meant total query
+    # count for the whole admin dashboard still scaled linearly with
+    # organization size (measured: ~2,500 queries / ~7.4s at 500
+    # employees vs. ~90 queries / ~0.55s at 10). range_cost_for_employees
+    # guarantees numerically identical per-employee results to calling
+    # range_cost_for_employee for that employee alone (see its own
+    # docstring), so this is a pure performance fix, not a behavior
+    # change.
+    line_items_by_employee = range_cost_for_employees(
+        scope, employee_ids, start_date, end_date
+    )
+
     total = Decimal("0.00")
     unconfigured_employee_count = 0
     for employee_id in employee_ids:
-        try:
-            line_items = range_cost_for_employee(scope, employee_id, start_date, end_date)
-        except ValidationError:
+        line_items = line_items_by_employee.get(employee_id)
+        if line_items is None:
             unconfigured_employee_count += 1
             continue
         for line_item in line_items:

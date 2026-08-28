@@ -28,10 +28,13 @@ from flask_login import current_user
 from app.auth.decorators import login_required, role_required
 from app.auth.scope import build_scope_for_user
 from app.forms import ClockInForm, ClockOutForm
+from app.routes import csv_response, pdf_response
 from app.services import departments as department_service
 from app.services import employees as employee_service
+from app.services import exports as export_service
 from app.services import labor_cost as labor_cost_service
 from app.services import leave as leave_service
+from app.services import pdf_reports as pdf_report_service
 from app.services import reports as report_service
 from app.services import scheduling as scheduling_service
 from app.services import working_hours as working_hours_service
@@ -345,6 +348,15 @@ def overtime_report():
     start, end = _clamp_range(start, end)
     department_id = request.args.get("department_id", type=int)
 
+    export_format = request.args.get("format")
+    if export_format and department_id is not None:
+        if export_format == "csv":
+            filename, csv_text = export_service.overtime_csv(scope, department_id, start, end)
+            return csv_response(filename, csv_text)
+        if export_format == "pdf":
+            pdf_bytes = pdf_report_service.overtime_pdf(scope, department_id, start, end)
+            return pdf_response(f"overtime_{start.isoformat()}_{end.isoformat()}.pdf", pdf_bytes)
+
     summary = []
     if department_id is not None:
         summary = report_service.overtime_summary(scope, department_id, start, end)
@@ -356,6 +368,73 @@ def overtime_report():
         start=start,
         end=end,
         summary=summary,
+    )
+
+
+@dashboard_bp.route("/reports/working-hours", methods=["GET"])
+@role_required("admin", "manager")
+def working_hours_report():
+    """Department working-hours report — the admin/manager-facing
+    counterpart to the employee's own ``dashboard.my_hours`` (which
+    stays deliberately self-service-only, MVP-1_version2.md §16). Same
+    filter shape as ``overtime_report``: no data until a department is
+    picked, an export needs one too.
+    """
+    scope = build_scope_for_user(current_user)
+    departments = department_service.list_departments(scope)
+
+    today = report_service.today_business_date(scope)
+    default_start, default_end = _default_cost_window(today)
+    start = _parse_date(request.args.get("start"), default_start)
+    end = _parse_date(request.args.get("end"), default_end)
+    start, end = _clamp_range(start, end)
+    department_id = request.args.get("department_id", type=int)
+
+    export_format = request.args.get("format")
+    if export_format and department_id is not None:
+        if export_format == "csv":
+            filename, csv_text = export_service.working_hours_csv(
+                scope, department_id, start, end
+            )
+            return csv_response(filename, csv_text)
+        if export_format == "pdf":
+            pdf_bytes = pdf_report_service.working_hours_pdf(scope, department_id, start, end)
+            return pdf_response(
+                f"working_hours_{start.isoformat()}_{end.isoformat()}.pdf", pdf_bytes
+            )
+
+    daily_hours = []
+    employee_names = {}
+    if department_id is not None:
+        employees = [
+            employee
+            for employee in employee_service.list_employees(scope)
+            if employee.department_id == department_id
+        ]
+        employee_names = {e.id: f"{e.first_name} {e.last_name}" for e in employees}
+        seconds_by_employee = working_hours_service.worked_seconds_by_range_for_employees(
+            scope, [e.id for e in employees], start, end
+        )
+        for employee in employees:
+            for business_date, seconds in sorted(
+                seconds_by_employee.get(employee.id, {}).items()
+            ):
+                daily_hours.append(
+                    {
+                        "employee_id": employee.id,
+                        "date": business_date,
+                        "hours": Decimal(seconds) / Decimal(3600),
+                    }
+                )
+
+    return render_template(
+        "reports/working_hours.html",
+        departments=departments,
+        department_id=department_id,
+        start=start,
+        end=end,
+        daily_hours=daily_hours,
+        employee_names=employee_names,
     )
 
 

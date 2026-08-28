@@ -8,6 +8,8 @@ is never forwarded, so a client cannot smuggle in a field (e.g.
 ``organization_id``) that was never part of the form.
 """
 
+from datetime import date
+
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
@@ -22,8 +24,11 @@ from app.forms import (
     LeaveRequestForm,
     RejectLeaveForm,
 )
+from app.routes import csv_response, pdf_response
 from app.services import employees as employee_service
+from app.services import exports as export_service
 from app.services import leave as leave_service
+from app.services import pdf_reports as pdf_report_service
 from app.services import reports as report_service
 from app.services import scheduling as scheduling_service
 from app.services.errors import ValidationError
@@ -57,6 +62,23 @@ def list_requests():
     can_manage = scope.role in ("admin", "manager")
     employee_id = request.args.get("employee_id", type=int) if can_manage else None
     tz = scheduling_service.organization_timezone(scope)
+
+    export_format = request.args.get("format")
+    if export_format:
+        start_arg = request.args.get("start")
+        end_arg = request.args.get("end")
+        start = date.fromisoformat(start_arg) if start_arg else None
+        end = date.fromisoformat(end_arg) if end_arg else None
+        if export_format == "csv":
+            filename, csv_text = export_service.leave_csv(
+                scope, status=status, employee_id=employee_id, start=start, end=end
+            )
+            return csv_response(filename, csv_text)
+        if export_format == "pdf":
+            pdf_bytes = pdf_report_service.leave_pdf(
+                scope, status=status, employee_id=employee_id, start=start, end=end
+            )
+            return pdf_response("leave_report.pdf", pdf_bytes)
 
     requests = leave_service.list_leave_requests(scope, status=status, employee_id=employee_id)
     leave_types = leave_service.list_leave_types(scope)

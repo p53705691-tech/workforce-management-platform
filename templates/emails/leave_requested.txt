@@ -1,0 +1,14 @@
+New leave request awaiting your review — {{ organization_name }}
+
+{{ employee_name }} has requested {{ leave_type_name }} leave.
+
+From: {{ starts_at }}
+To:   {{ ends_at }}
+{% if reason %}
+Reason: {{ reason }}
+{% endif %}
+Sign in to review and approve or reject this request.
+
+--
+This is an automated message from {{ organization_name }}'s workforce
+management system. Please do not reply to this email.

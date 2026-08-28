@@ -530,6 +530,116 @@ class TestZeroHourDayDoesNotRequireConfiguration:
         assert [item for item in line_items if item.category.startswith("weekly_ot")] == []
 
 
+class TestRangeCostForEmployees:
+    """Regression coverage for the batched, multi-employee entry point
+    ``reports.overtime_summary`` now calls instead of looping
+    ``range_cost_for_employee`` once per employee (Phase 1 performance
+    work): every employee's result must be byte-for-byte identical to
+    what calling ``range_cost_for_employee`` for that one employee alone
+    would produce, since both funnel through the same
+    ``_compute_range_cost`` core.
+    """
+
+    def test_batched_result_matches_calling_range_cost_for_employee_per_employee(
+        self, db_session
+    ):
+        """Three employees, spanning every interesting case the batched
+        path must reproduce exactly: a plain 8h/day worker (regular
+        only), a heavy week that triggers both daily and weekly OT (the
+        reclassification/proration logic under test), and an employee
+        with no pay rate configured at all (the per-employee
+        ``ValidationError`` isolation).
+        """
+        org = make_organization(db_session)
+        department = make_department(db_session, organization=org)
+        admin = make_user(db_session, organization=org, role="admin")
+        _default_policy(db_session, org)
+
+        plain_employee = make_employee(db_session, organization=org, department=department)
+        heavy_employee = make_employee(db_session, organization=org, department=department)
+        unconfigured_employee = make_employee(
+            db_session, organization=org, department=department
+        )
+
+        make_pay_rate(
+            db_session, organization=org, employee=plain_employee,
+            hourly_rate=Decimal("18.5000"), effective_from=date(2020, 1, 1),
+        )
+        make_pay_rate(
+            db_session, organization=org, employee=heavy_employee,
+            hourly_rate=Decimal("22.2500"), effective_from=date(2020, 1, 1),
+        )
+
+        monday = date(2026, 2, 2)
+        saturday = monday + timedelta(days=5)
+
+        _worked_hours_entry(db_session, org, plain_employee, admin, monday, 8)
+        _worked_hours_entry(db_session, org, plain_employee, admin, monday + timedelta(days=1), 8)
+
+        for offset in range(6):
+            _worked_hours_entry(
+                db_session, org, heavy_employee, admin, monday + timedelta(days=offset), 9
+            )
+
+        # Worked hours with no pay rate configured at all -- the genuine
+        # configuration-gap case, not a documented zero-hour non-issue.
+        _worked_hours_entry(db_session, org, unconfigured_employee, admin, monday, 8)
+
+        scope = _scope("admin", org.id, user_id=admin.id)
+        employee_ids = [plain_employee.id, heavy_employee.id, unconfigured_employee.id]
+
+        batched = labor_cost_service.range_cost_for_employees(
+            scope, employee_ids, monday, saturday
+        )
+
+        # Reference: the exact pre-batching call shape, invoked once per
+        # employee, exception isolation applied the same way
+        # reports.overtime_summary/department_cost_summary already do.
+        expected: dict[int, list | None] = {}
+        for employee_id in employee_ids:
+            try:
+                expected[employee_id] = labor_cost_service.range_cost_for_employee(
+                    scope, employee_id, monday, saturday
+                )
+            except ValidationError:
+                expected[employee_id] = None
+
+        assert set(batched) == set(expected)
+        assert batched[unconfigured_employee.id] is None
+        assert expected[unconfigured_employee.id] is None
+
+        for employee_id in (plain_employee.id, heavy_employee.id):
+            assert batched[employee_id] is not None
+            assert len(batched[employee_id]) == len(expected[employee_id])
+            for actual_item, expected_item in zip(
+                batched[employee_id], expected[employee_id]
+            ):
+                assert actual_item == expected_item
+
+        # Sanity: the heavy employee's batched result still carries the
+        # same hand-computed weekly-OT figure asserted elsewhere in this
+        # file for the identical scenario (6 * 9h, 8h weekly OT @ 1.5x).
+        heavy_line_items = batched[heavy_employee.id]
+        weekly_items = [
+            item for item in heavy_line_items if item.category.startswith("weekly_ot")
+        ]
+        assert len(weekly_items) == 1
+        assert weekly_items[0].hours == Decimal("8")
+        expected_weekly_cost = (Decimal("8") * Decimal("22.2500") * Decimal("1.5")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        assert weekly_items[0].cost == expected_weekly_cost == Decimal("267.00")
+
+    def test_empty_employee_ids_returns_empty_dict(self, db_session):
+        org = make_organization(db_session)
+        admin = make_user(db_session, organization=org, role="admin")
+        scope = _scope("admin", org.id, user_id=admin.id)
+
+        assert labor_cost_service.range_cost_for_employees(
+            scope, [], date(2026, 1, 1), date(2026, 1, 1)
+        ) == {}
+
+
 class TestDepartmentCostSummary:
     def test_totals_every_employee_in_the_department(self, db_session):
         org = make_organization(db_session)

@@ -64,8 +64,10 @@
           <p class="status-card-detail text-muted">{{ todays_shift_line }}</p>
         </div>
       </div>
-      <form method="post" action="{{ url_for('attendance.clock_out', entry_id=attendance_status.entry.id) }}" novalidate>
+      <form method="post" action="{{ url_for('attendance.clock_out', entry_id=attendance_status.entry.id) }}" novalidate data-geo-capture>
         {{ clock_out_form.hidden_tag() }}
+        {{ clock_out_form.latitude() }}
+        {{ clock_out_form.longitude() }}
         <button type="submit" class="btn btn-danger btn-lg">Clock Out</button>
       </form>
     </div>
@@ -93,8 +95,10 @@
           <p class="status-card-detail">{{ todays_shift_line }}</p>
         </div>
       </div>
-      <form method="post" action="{{ url_for('attendance.clock_in') }}" novalidate>
+      <form method="post" action="{{ url_for('attendance.clock_in') }}" novalidate data-geo-capture>
         {{ clock_in_form.hidden_tag() }}
+        {{ clock_in_form.latitude() }}
+        {{ clock_in_form.longitude() }}
         <button type="submit" class="btn btn-primary btn-lg">Clock In</button>
       </form>
     </div>

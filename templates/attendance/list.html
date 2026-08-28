@@ -30,6 +30,13 @@
     <button type="submit">Filter</button>
   </form>
 
+  {% if can_manage and entries_context %}
+    <div class="row-actions">
+      <a class="btn btn-secondary" href="{{ url_for('attendance.list_entries', start=start.isoformat(), end=end.isoformat(), employee_id=selected_employee_id, format='csv') }}">{{ icons.icon("download") }} Export CSV</a>
+      <a class="btn btn-secondary" href="{{ url_for('attendance.list_entries', start=start.isoformat(), end=end.isoformat(), employee_id=selected_employee_id, format='pdf') }}">{{ icons.icon("download") }} Export PDF</a>
+    </div>
+  {% endif %}
+
   {% if end < start %}
     <div class="state-card">
       {{ icons.icon("alert-triangle") }}

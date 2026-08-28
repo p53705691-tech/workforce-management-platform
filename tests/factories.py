@@ -13,8 +13,10 @@ from decimal import Decimal
 from app.auth.passwords import hash_password
 from app.models.attendance_entry import AttendanceEntry
 from app.models.department import Department
+from app.models.department_manager import DepartmentManager
 from app.models.employee import Employee
 from app.models.employee_pay_rate import EmployeePayRate
+from app.models.job_location import JobLocation
 from app.models.leave_request import LeaveRequest
 from app.models.leave_type import LeaveType
 from app.models.organization import Organization
@@ -58,6 +60,23 @@ def make_department(session, organization=None, **overrides):
     session.add(department)
     session.flush()
     return department
+
+
+def make_job_location(session, organization=None, **overrides):
+    n = _next_n()
+    organization = organization or make_organization(session)
+    defaults = {
+        "organization_id": organization.id,
+        "name": f"Job Location {n}",
+        "latitude": Decimal("0"),
+        "longitude": Decimal("0"),
+        "radius_meters": 100,
+    }
+    defaults.update(overrides)
+    job_location = JobLocation(**defaults)
+    session.add(job_location)
+    session.flush()
+    return job_location
 
 
 def make_employee(session, organization=None, department=None, **overrides):
@@ -268,6 +287,20 @@ def make_leave_request(
     session.add(leave_request)
     session.flush()
     return leave_request
+
+
+def make_department_manager(session, user=None, department=None, organization=None):
+    organization = organization or make_organization(session)
+    department = department or make_department(session, organization=organization)
+    user = user or make_user(session, organization=organization, role="manager")
+    manager_link = DepartmentManager(
+        user_id=user.id,
+        department_id=department.id,
+        organization_id=organization.id,
+    )
+    session.add(manager_link)
+    session.flush()
+    return manager_link
 
 
 def make_user(session, organization=None, password="correct horse battery staple", **overrides):
